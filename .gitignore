@@ -1,0 +1,40 @@
+# Keil / ARM build outputs
+**/Objects/
+**/Listings/
+**/*.axf
+**/*.bin
+**/*.hex
+**/*.elf
+**/*.map
+**/*.o
+**/*.d
+**/*.dep
+**/*.lnp
+**/*.htm
+**/*.build_log.htm
+**/rebuild.log
+**/final_rebuild.log
+**/rebuild*.log
+**/*_verify.log
+**/pc_sa3a_build.log
+
+# Keil user-local workspace files
+**/*.uvguix.*
+**/*.uvgui.*
+**/*.uvopt
+**/*.uvoptx
+**/JLinkLog.txt
+**/JLinkSettings.ini
+**/EventRecorderStub.scvd
+
+# Local tool outputs
+tool/log.txt
+tool/boot.hex
+tool/*.bin
+tool/*.hex
+tool/DUCAR_RawComm_*.txt
+
+# Build diagnostics and local work records
+**/*.log
+**/*.Bak
+.superpowers/

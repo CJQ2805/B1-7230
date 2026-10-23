@@ -1,0 +1,15 @@
+; APP正式链接脚本：APP1运行区由BOOT跳转和搬运。
+; APP1: 0x08010000 ~ 0x0803EFFF，共188K。
+; SRAM: 0x20000000 ~ 0x20023FFF，共144K。
+
+LR_IROM1 0x08010000 0x0002F000  {
+  ER_IROM1 0x08010000 0x0002F000  {
+    *.o (RESET, +First)
+    *(InRoot$$Sections)
+    .ANY (+RO)
+    .ANY (+XO)
+  }
+  RW_IRAM1 0x20000000 0x00024000  {
+    .ANY (+RW +ZI)
+  }
+}

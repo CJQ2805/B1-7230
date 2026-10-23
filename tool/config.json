@@ -1,0 +1,12 @@
+{
+  "n32": {
+    "type": "general",
+    "app_param_h": "app\\N32G45x_KEIL\\User_Src\\App\\app_param.h",
+    "app_bin": "app\\N32G45x_KEIL\\MDK-ARM\\Objects\\N32G45x.bin",
+    "app_hex": "app\\N32G45x_KEIL\\MDK-ARM\\Objects\\N32G45x.hex",
+    "boot_hex": "boot\\Projects\\MDK\\Objects\\boot.hex",
+    "copy_boot_hex": "tool\\boot.hex",
+    "output_dir": "tool",
+    "magic": "DUCAR"
+  }
+}

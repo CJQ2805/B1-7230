@@ -1,0 +1,25 @@
+# SDD ledger — plan: docs/superpowers/plans/2026-10-12-ducar-can-a03-alignment.md
+
+- 用户在“执行/继续”中授权本会话直接实现批准规格，无须重复设计确认。
+- Pre-flight: 参数版本供F200消费；1ms时基同时供周期、LifeValue、TP和窗口消费，需要一起修正。
+- Ruling: 实际工程main有大量既有变更，按用户先前明确指示原位编辑且不提交Git；仅增量修改本次范围。
+- Ruling: T字段按U16小端；依据A0.3的2字节长度与全协议小端定义。若文档类型U8才是意图，需同步修订字段布局。
+- Ruling: BMR/ID没有可靠信号映射，以0报告未接入，不把DET_LOAD和二级熔断检测编码为BMR/ID；后续确认实际接线后接入。
+- Ruling: F22F有效请求刷新5秒发送窗口，便于无DETD接入时主机保持通信；此为已批准方案的默认行为。
+- SOP核查：原SOX电流单位是0.1A，乘10转换为0.01A正确；不改数值，仅修正CAN说明。
+- Task 1: complete — 主机编译运行真实协议，修改前10项行为失败；覆盖版本、周期、心跳、TP、保护等级、控制DLC。
+- Task 2: complete — 所有已复现差异修正后主机测试0失败；进一步覆盖来源/目标地址、静默窗口、LifeValue回绕及SN上界。
+- Ruling: 控制命令保留字段可省略或随8字节发送，兼容两类上位机；E700文档明确DLC4，仍严格要求4。
+- 既有契约检查：初次19/20通过，can_a02_contract_test仍要求已废弃迁移字段；已按此前用户“只用U16标识、不迁移”决策更新，不改运行时Flash代码。
+- 初次Keil全编译：0错误/1警告；LOG任务RTT函数缺声明，已补SEGGER_RTT.h，待最终重编译。
+- 最终回归：15组真实协议行为检查通过；20/20既有契约通过；拓扑C测试退出0。
+- 最终Keil全编译：exit0，0错误/0警告；日志rebuild_can_a03_final_20261012.log；包CRC32=0x961E9B67。
+- Task 3: awaiting final independent review — 构建与回归已完成，真实总线未连接测试。
+- Final review: independent read-only review completed。已公开的数据源/未支持项按批准规格保留，物理总线/任务墙钟/Bus-Off属于实机验证缺口。
+- Final: Ruling: 将复核“未裁定”的既有故障掩码错位、E900 ACK丢失和TP发送阶段无超时按当前通信影响升为Important；用户要求A0.3对齐及通信恢复，不因问题早已存在而略过。代价是增加本轮修复范围，但不改报文字段布局或业务保护策略。
+- Final: Ruling: 两条LOG收尾和有效A/B/C控制NAK测试覆盖从Minor升为必要验证项；它们直接证明本轮宣称的传输结束和拒绝行为，已补齐。
+- Final: fixed native discharge fault masks — 命名位域触发的低SOC/过流锁测试 RED→GREEN。
+- Final: fixed E900 ACK retention — ACK槽占用时完成和超时两条路径 RED→GREEN。
+- Final: fixed SEND_RTS/SEND_DT progress timeout — 两个发送阶段堵塞测试 RED→GREEN。
+- Final regression: 18组主机行为通过，20/20契约通过；Keil全编译exit0、0错误/0警告，APP88032字节，包88192字节，CRC32=0x53D92F17。
+- Task 3: complete — 独立复核意见已处理；交付verification.md、最终Keil日志和升级BIN。无Git提交、无设备下载。

@@ -1,0 +1,6 @@
+#ifndef DUCAR_CHARGE_FAULT_TEST_TASK_H
+#define DUCAR_CHARGE_FAULT_TEST_TASK_H
+
+#include "FreeRTOS.h"
+
+#endif

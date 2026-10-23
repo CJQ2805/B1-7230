@@ -1,0 +1,17 @@
+#ifndef TEST_APP_FLASH_MAP_H
+#define TEST_APP_FLASH_MAP_H
+
+#include <stdint.h>
+
+extern uint8_t g_test_flash[2048];
+
+#define APP_FLASH_MAP_DB_PARAM_ADDR ((uint32_t)0x0803F000UL)
+#define APP_FLASH_MAP_FLASH_PAGE_SIZE ((uint32_t)2048UL)
+#define APP_FLASH_MAP_CAL2_A_ADDR ((uint32_t)0x0807F000UL)
+#define APP_FLASH_MAP_CAL2_B_ADDR ((uint32_t)0x0807F800UL)
+#define APP_FLASH_MAP_DB_PARAM_CURRENT_CALIB_OFFSET ((uint32_t)0x00U)
+#define APP_FLASH_MAP_DB_PARAM_VOLTAGE_CALIB_OFFSET ((uint32_t)0x0EU)
+#define APP_FLASH_MAP_DB_PARAM_SN_OFFSET ((uint32_t)0x54U)
+#define APP_FLASH_TAG_CURRENT_CALIB ((uint16_t)0x4355U)
+
+#endif
