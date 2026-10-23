@@ -8,15 +8,16 @@ const uint8_t uds_customer_flash_driver_id[UDS_CUSTOMER_FLASH_DRIVER_ID_SIZE] =
     0x42U, 0x4DU, 0x53U, 0x2DU, 0x44U, 0x55U, 0x43U, 0x41U, 0x52U
 };
 
-#if (UDS_CUSTOMER_KEY_CONST_VALID == 1U)
-const uint8_t uds_customer_key_const[4] =
+/* SeednKey_20250401.dll GenerateKeyEx KeyConst for security levels 1 and 9. */
+static const uint8_t s_uds_customer_key_const_level1[4] =
 {
-    UDS_CUSTOMER_KEY_CONST_0,
-    UDS_CUSTOMER_KEY_CONST_1,
-    UDS_CUSTOMER_KEY_CONST_2,
-    UDS_CUSTOMER_KEY_CONST_3
+    0xACU, 0x89U, 0x18U, 0xF2U
 };
-#endif
+
+static const uint8_t s_uds_customer_key_const_level9[4] =
+{
+    0xE3U, 0xBBU, 0x25U, 0x40U
+};
 
 /* Customer PDF: CRC-16/CCITT-FALSE, poly=0x1021, init=0xFFFF, no reflection/xorout. */
 uint16_t uds_customer_profile_crc16(const uint8_t *data, uint32_t length)
@@ -74,6 +75,19 @@ void uds_customer_profile_calculate_key(const uint8_t seed[4],
         uint8_t t2 = (uint8_t)(seed[rotated_source[index]] ^ key_const[index]);
         key[index] = (uint8_t)((uint16_t)t1 + (uint16_t)t2);
     }
+}
+
+const uint8_t *uds_customer_profile_get_key_const(uint8_t security_level)
+{
+    if (security_level == 0x01U)
+    {
+        return s_uds_customer_key_const_level1;
+    }
+    if (security_level == 0x09U)
+    {
+        return s_uds_customer_key_const_level9;
+    }
+    return NULL;
 }
 
 uint8_t uds_customer_profile_is_flash_driver(const uint8_t *data, uint16_t length)

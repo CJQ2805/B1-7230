@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "../../app/N32G45x_KEIL/User_Src/Protocol/UDS/UDSLogic/uds_customer_profile.h"
 
@@ -28,30 +29,23 @@ static void test_crc16_ccitt_false_vectors(void)
 static void test_security_key_algorithm(void)
 {
     static const uint8_t seed[4] = {0x12U, 0x34U, 0x56U, 0x78U};
-    static const uint8_t zero_key_const[4] = {0U, 0U, 0U, 0U};
-    static const uint8_t custom_key_const[4] = {0xAAU, 0xBBU, 0xCCU, 0xDDU};
-    static const uint8_t expected_zero[4] = {0x68U, 0xACU, 0x68U, 0xACU};
-    static const uint8_t expected_custom[4] = {0xB4U, 0x52U, 0x78U, 0x8EU};
+    static const uint8_t expected_level1[4] = {0xB8U, 0xAEU, 0x58U, 0x50U};
+    static const uint8_t expected_level2[4] = {0xA6U, 0x52U, 0xAAU, 0xACU};
+    const uint8_t *level1_key_const;
+    const uint8_t *level2_key_const;
     uint8_t key[4];
-    uint8_t i;
 
-    /* Default customer KeyConst is configurable and currently all-zero. */
-    for (i = 0U; i < 4U; ++i)
-    {
-        assert(uds_customer_key_const[i] == 0U);
-    }
+    level1_key_const = uds_customer_profile_get_key_const(0x01U);
+    level2_key_const = uds_customer_profile_get_key_const(0x09U);
+    assert(level1_key_const != NULL);
+    assert(level2_key_const != NULL);
+    assert(uds_customer_profile_get_key_const(0x02U) == NULL);
 
-    uds_customer_profile_calculate_key(seed, zero_key_const, key);
-    assert(key[0] == expected_zero[0]);
-    assert(key[1] == expected_zero[1]);
-    assert(key[2] == expected_zero[2]);
-    assert(key[3] == expected_zero[3]);
+    uds_customer_profile_calculate_key(seed, level1_key_const, key);
+    assert(memcmp(key, expected_level1, sizeof(key)) == 0);
 
-    uds_customer_profile_calculate_key(seed, custom_key_const, key);
-    assert(key[0] == expected_custom[0]);
-    assert(key[1] == expected_custom[1]);
-    assert(key[2] == expected_custom[2]);
-    assert(key[3] == expected_custom[3]);
+    uds_customer_profile_calculate_key(seed, level2_key_const, key);
+    assert(memcmp(key, expected_level2, sizeof(key)) == 0);
 }
 
 static void test_flash_driver_signature(void)

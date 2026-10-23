@@ -10,7 +10,7 @@
 #define _SERVICE_CFG_H_
 
 
-#define SID_NUM       12     // 客户升级流程使用的UDS服务数量
+#define SID_NUM       5      // APP仅保留进入BOOT前所需的UDS服务
 
 #define SID_10        (0x10) /* SessionControl */
 #define SID_11        (0x11) /* ECUReset */

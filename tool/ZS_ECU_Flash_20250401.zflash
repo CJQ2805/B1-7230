@@ -1,0 +1,265 @@
+<?xml version="1.0" encoding="GB2312"?>
+<!--Created By ZLG ZCANPRO-->
+<flow>
+ <item type="setting">
+  <src_addr>700</src_addr>
+  <dst_addr>7a8</dst_addr>
+  <fun_addr>7df</fun_addr>
+  <phy_addr>7a0</phy_addr>
+  <comm_frame_type>0</comm_frame_type>
+  <session_keep_suppress_response>1</session_keep_suppress_response>
+  <session_keep_enable>0</session_keep_enable>
+  <session_keep_addr>700</session_keep_addr>
+  <timeout>2000</timeout>
+  <neg78_timeout>5000</neg78_timeout>
+  <local_st_min>0</local_st_min>
+  <remote_st_min>0</remote_st_min>
+  <is_modify_ecu_stmin>0</is_modify_ecu_stmin>
+  <file_block_interval>0</file_block_interval>
+  <file_block_retry>2</file_block_retry>
+  <block_size>0</block_size>
+  <version>0</version>
+  <is_fill_byte>1</is_fill_byte>
+  <fill_byte>0</fill_byte>
+  <fc_timeout>1000</fc_timeout>
+  <session_keep_interval>2000</session_keep_interval>
+  <show_session_keep_info>0</show_session_keep_info>
+  <show_raw_frame>1</show_raw_frame>
+  <output_max_row_count>100000</output_max_row_count>
+  <single_file_max_row_count>100000</single_file_max_row_count>
+  <lib_path></lib_path>
+  <can_type>0</can_type>
+  <check_any_negative_response>0</check_any_negative_response>
+  <wait_if_suppress_response>0</wait_if_suppress_response>
+ </item>
+ <item type="general">
+  <functionaddr>false</functionaddr>
+  <is_crc_cmd>false</is_crc_cmd>
+  <sid>10</sid>
+  <desc>扩展会话</desc>
+  <data>03 </data>
+  <suppress_response>false</suppress_response>
+ </item>
+ <item type="security">
+  <functionaddr>false</functionaddr>
+  <level>1</level>
+  <dll>SeednKey.dll</dll>
+  <desc>安全访问</desc>
+  <ignore_unlocked_check>false</ignore_unlocked_check>
+ </item>
+ <item type="general">
+  <functionaddr>false</functionaddr>
+  <is_crc_cmd>false</is_crc_cmd>
+  <sid>22</sid>
+  <desc>读取ECU系统供应商代码</desc>
+  <data>F1 8A </data>
+  <suppress_response>false</suppress_response>
+ </item>
+ <item type="general">
+  <functionaddr>false</functionaddr>
+  <is_crc_cmd>false</is_crc_cmd>
+  <sid>22</sid>
+  <desc>读取ECU硬件版本号</desc>
+  <data>F1 93 </data>
+  <suppress_response>false</suppress_response>
+ </item>
+ <item type="general">
+  <functionaddr>false</functionaddr>
+  <is_crc_cmd>false</is_crc_cmd>
+  <sid>22</sid>
+  <desc>读取ECU软件版本号</desc>
+  <data>F1 89 </data>
+  <suppress_response>false</suppress_response>
+ </item>
+ <item type="general">
+  <functionaddr>true</functionaddr>
+  <is_crc_cmd>false</is_crc_cmd>
+  <sid>10</sid>
+  <desc>扩展会话</desc>
+  <data>83 </data>
+  <suppress_response>true</suppress_response>
+ </item>
+ <item type="delay">
+  <desc>延时</desc>
+  <value>10</value>
+ </item>
+ <item type="general">
+  <functionaddr>true</functionaddr>
+  <is_crc_cmd>false</is_crc_cmd>
+  <sid>85</sid>
+  <desc>禁止DTC设置</desc>
+  <data>82 </data>
+  <suppress_response>true</suppress_response>
+ </item>
+ <item type="delay">
+  <desc>延时</desc>
+  <value>10</value>
+ </item>
+ <item type="general">
+  <functionaddr>true</functionaddr>
+  <is_crc_cmd>false</is_crc_cmd>
+  <sid>28</sid>
+  <desc>通讯控制</desc>
+  <data>83 03 </data>
+  <suppress_response>true</suppress_response>
+ </item>
+ <item type="delay">
+  <desc>延时</desc>
+  <value>10</value>
+ </item>
+ <item type="general">
+  <functionaddr>false</functionaddr>
+  <is_crc_cmd>false</is_crc_cmd>
+  <sid>10</sid>
+  <desc>编程会话</desc>
+  <data>02 </data>
+  <suppress_response>false</suppress_response>
+ </item>
+ <item type="security">
+  <functionaddr>false</functionaddr>
+  <level>9</level>
+  <dll>SeednKey.dll</dll>
+  <desc>安全访问</desc>
+  <ignore_unlocked_check>false</ignore_unlocked_check>
+ </item>
+ <item type="general">
+  <functionaddr>false</functionaddr>
+  <is_crc_cmd>false</is_crc_cmd>
+  <sid>22</sid>
+  <desc>读存储器引导装载器版本信息</desc>
+  <data>F1 80 </data>
+  <suppress_response>false</suppress_response>
+ </item>
+ <item type="general">
+  <functionaddr>false</functionaddr>
+  <is_crc_cmd>false</is_crc_cmd>
+  <sid>2E</sid>
+  <desc>写入指纹数据标识符</desc>
+  <data>F1 84 20 24 05 27 00 00 00 00 </data>
+  <suppress_response>false</suppress_response>
+ </item>
+ <item type="download">
+  <desc>flashdriver下载</desc>
+  <functionaddr>false</functionaddr>
+  <file>BMS-DUCAR_FlashDriver.s19</file>
+  <dataFormatIdentifier>0</dataFormatIdentifier>
+  <addresssize>4</addresssize>
+  <lengthsize>4</lengthsize>
+  <erase_ecu_memory_mode>3</erase_ecu_memory_mode>
+  <crc_type>1</crc_type>
+  <crc_poly>1021</crc_poly>
+  <crc_init_value>ffff</crc_init_value>
+  <crc_xor_value>0</crc_xor_value>
+  <crc_in_reverse>0</crc_in_reverse>
+  <crc_out_reverse>0</crc_out_reverse>
+  <crc_cmd>31 01 02 02 </crc_cmd>
+  <crc_enable>1</crc_enable>
+  <crc_block_enable>0</crc_block_enable>
+  <customParamForS37Enable>0</customParamForS37Enable>
+  <customParamForS37></customParamForS37>
+  <file_blocks_enable>0,1</file_blocks_enable>
+  <ever_file_block_delay>0</ever_file_block_delay>
+  <crc_block_custom_enable>0</crc_block_custom_enable>
+  <crc_block_custom_cmd>31 01 F1 A0 </crc_block_custom_cmd>
+ </item>
+ <item type="general">
+  <functionaddr>false</functionaddr>
+  <is_crc_cmd>true</is_crc_cmd>
+  <sid>31</sid>
+  <desc>CRC校验</desc>
+  <data>01 02 02 D4 91</data>
+  <suppress_response>false</suppress_response>
+ </item>
+ <item type="download">
+  <desc>app下载</desc>
+  <functionaddr>false</functionaddr>
+  <file>A800000002_7230B1_V01_T12_APP1.s19</file>
+  <dataFormatIdentifier>0</dataFormatIdentifier>
+  <addresssize>4</addresssize>
+  <lengthsize>4</lengthsize>
+  <erase_ecu_memory_mode>0</erase_ecu_memory_mode>
+  <crc_type>1</crc_type>
+  <crc_poly>1021</crc_poly>
+  <crc_init_value>ffff</crc_init_value>
+  <crc_xor_value>0</crc_xor_value>
+  <crc_in_reverse>0</crc_in_reverse>
+  <crc_out_reverse>0</crc_out_reverse>
+  <crc_cmd>31 01 02 02 </crc_cmd>
+  <crc_enable>1</crc_enable>
+  <crc_block_enable>0</crc_block_enable>
+  <customParamForS37Enable>0</customParamForS37Enable>
+  <customParamForS37></customParamForS37>
+  <file_blocks_enable></file_blocks_enable>
+  <ever_file_block_delay>0</ever_file_block_delay>
+  <crc_block_custom_enable>0</crc_block_custom_enable>
+  <crc_block_custom_cmd>31 01 F1 A0 </crc_block_custom_cmd>
+ </item>
+ <item type="general">
+  <functionaddr>false</functionaddr>
+  <is_crc_cmd>true</is_crc_cmd>
+  <sid>31</sid>
+  <desc>CRC校验</desc>
+  <data>01 02 02 </data>
+  <suppress_response>false</suppress_response>
+ </item>
+ <item type="general">
+  <functionaddr>false</functionaddr>
+  <is_crc_cmd>false</is_crc_cmd>
+  <sid>31</sid>
+  <desc>程序依赖性检查</desc>
+  <data>01 FF 01 </data>
+  <suppress_response>false</suppress_response>
+ </item>
+ <item type="general">
+  <functionaddr>false</functionaddr>
+  <is_crc_cmd>false</is_crc_cmd>
+  <sid>11</sid>
+  <desc>软件重启</desc>
+  <data>03 </data>
+  <suppress_response>false</suppress_response>
+ </item>
+ <item type="delay">
+  <desc>延时</desc>
+  <value>3000</value>
+ </item>
+ <item type="general">
+  <functionaddr>false</functionaddr>
+  <is_crc_cmd>false</is_crc_cmd>
+  <sid>10</sid>
+  <desc>扩展会话</desc>
+  <data>03 </data>
+  <suppress_response>false</suppress_response>
+ </item>
+ <item type="general">
+  <functionaddr>true</functionaddr>
+  <is_crc_cmd>false</is_crc_cmd>
+  <sid>28</sid>
+  <desc>允许非诊断报文发送</desc>
+  <data>80 03 </data>
+  <suppress_response>true</suppress_response>
+ </item>
+ <item type="delay">
+  <desc>延时</desc>
+  <value>10</value>
+ </item>
+ <item type="general">
+  <functionaddr>true</functionaddr>
+  <is_crc_cmd>false</is_crc_cmd>
+  <sid>85</sid>
+  <desc>打开DTC设置</desc>
+  <data>81 </data>
+  <suppress_response>true</suppress_response>
+ </item>
+ <item type="delay">
+  <desc>延时</desc>
+  <value>10</value>
+ </item>
+ <item type="general">
+  <functionaddr>true</functionaddr>
+  <is_crc_cmd>false</is_crc_cmd>
+  <sid>10</sid>
+  <desc>诊断会话控制</desc>
+  <data>01 </data>
+  <suppress_response>false</suppress_response>
+ </item>
+</flow>

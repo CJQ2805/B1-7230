@@ -155,23 +155,24 @@ static uint8_t rand_u8(void)
 * 函数返回: 0: 一致; -1: 不一致
 * 其它说明: 无
 ******************************************************************************/
-int uds_security_access(uint8_t* key_buf, uint8_t* seed_buf)
+int uds_security_access(uint8_t* key_buf, uint8_t* seed_buf, uint8_t security_level)
 {
-#if (UDS_CUSTOMER_KEY_CONST_VALID == 0U)
-	(void)key_buf;
-	(void)seed_buf;
-	return -1;
-#else
 	uint8_t expected_key[UDS_SEED_LENGTH];
 	uint8_t index;
+	const uint8_t *key_const;
 
 	if ((key_buf == NULL) || (seed_buf == NULL))
 	{
 		return -1;
 	}
+	key_const = uds_customer_profile_get_key_const(security_level);
+	if (key_const == NULL)
+	{
+		return -1;
+	}
 
 	uds_customer_profile_calculate_key(seed_buf,
-	                                   uds_customer_key_const,
+	                                   key_const,
 	                                   expected_key);
 	for (index = 0U; index < UDS_SEED_LENGTH; ++index)
 	{
@@ -181,7 +182,6 @@ int uds_security_access(uint8_t* key_buf, uint8_t* seed_buf)
 		}
 	}
 	return 0;
-#endif
 }
 
 
@@ -292,17 +292,9 @@ void service_27_SecurityAccess(const uint8_t* msg_buf, uint16_t msg_dlc)
 	}
 	requested_level = pending_security_level;
 
-#if (UDS_CUSTOMER_KEY_CONST_VALID == 0U)
-	/* The vendor DLL's KeyConst is unavailable; do not unlock with a guessed key. */
-	req_seed = 0U;
-	pending_seed_subfunction = 0U;
-	pending_security_level = UDS_SA_NON;
-	memset(org_seed_buf, 0, sizeof(org_seed_buf));
-	uds_negative_rsp(SID_27, NRC_CONDITIONS_NOT_CORRECT);
-	return;
-#endif
-
-	if (uds_security_access((uint8_t *)&msg_buf[2], org_seed_buf) == 0)
+	if (uds_security_access((uint8_t *)&msg_buf[2],
+	                        org_seed_buf,
+	                        pending_seed_subfunction) == 0)
 	{
 		rsp_buf[0] = USD_GET_POSITIVE_RSP(SID_27);
 		rsp_buf[1] = subfunction;

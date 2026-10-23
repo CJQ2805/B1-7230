@@ -1,36 +1,46 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$base = Join-Path $root 'app\N32G45x_KEIL\User_Src\Protocol\UDS\UDSBase'
-$logic = Join-Path $root 'app\N32G45x_KEIL\User_Src\Protocol\UDS\UDSLogic'
-$ecuReset = Get-Content -Raw -LiteralPath (Join-Path $logic 'SID11_EcuReset.c')
-$upgrade = Get-Content -Raw -LiteralPath (Join-Path $logic 'uds_upgrade.c')
-$port = Get-Content -Raw -LiteralPath (Join-Path $base 'uds_port.c')
-$tp = Get-Content -Raw -LiteralPath (Join-Path $base 'uds_tp.c')
-$service = Get-Content -Raw -LiteralPath (Join-Path $base 'uds_service.c')
+$appLogic = Join-Path $root 'app\N32G45x_KEIL\User_Src\Protocol\UDS\UDSLogic'
+$appBase = Join-Path $root 'app\N32G45x_KEIL\User_Src\Protocol\UDS\UDSBase'
+$appProject = [xml](Get-Content -Raw -LiteralPath (Join-Path $root 'app\N32G45x_KEIL\MDK-ARM\N32G45x.uvprojx'))
+$bootLogic = Join-Path $root 'boot\User\UDS\UDSLogic'
+$appSession = Get-Content -Raw -LiteralPath (Join-Path $appLogic 'SID10_SessionControl.c')
+$appService = Get-Content -Raw -LiteralPath (Join-Path $appBase 'uds_service.c')
+$appPort = Get-Content -Raw -LiteralPath (Join-Path $appBase 'uds_port.c')
+$bootUds = Get-Content -Raw -LiteralPath (Join-Path $bootLogic 'boot_uds.c')
+$bootUpgrade = Get-Content -Raw -LiteralPath (Join-Path $bootLogic 'uds_upgrade.c')
+$bootServices = Get-Content -Raw -LiteralPath (Join-Path $bootLogic 'service_cfg.c')
+$projectFiles = $appProject.SelectNodes('//File')
 
-if ($ecuReset -notmatch 'UDS_RESET_SOFT' -or
-    $ecuReset -notmatch '(?s)if\s*\(!uds_upgrade_image_verified\(\)\).*?NRC_CONDITIONS_NOT_CORRECT.*?uds_upgrade_prepare_boot_move') {
-    throw '11 03 must be denied until CRC16 and dependency checks have passed'
+if ($appSession -notmatch 'ducar_iap_prepare_boot_wait_package\(\)' -or
+    $appSession -notmatch '(?s)uds_positive_rsp\(rsp_buf,\s*6U\)\s*==\s*0.*?uds_request_reset_after_tx\(\)' -or
+    $appSession -notmatch 'ducar_iap_cancel_boot_wait_package\(\)') {
+    throw 'APP must arm BOOT wait-package mode and reset only after the 50 02 response is queued.'
 }
-if ($ecuReset -notmatch '(?s)uds_positive_rsp\(rsp_buf,\s*sizeof\(rsp_buf\)\)\s*==\s*0.*?uds_request_reset_after_tx\(\)') {
-    throw 'Reset may only be armed after the 51 03 positive response was submitted'
+if (($appSession + $appService) -match 'uds_upgrade_(reset_state|image_verified|prepare_boot_move)\s*\(') {
+    throw 'APP session and service timeout paths must not retain the legacy APP2 download state machine.'
 }
-if ($ecuReset -match 'd_system_reset\s*\(') {
-    throw 'ECU reset must not execute inside the SID11 service callback'
+if ($appPort -notmatch '(?s)s_uds_reset_after_tx\s*!=\s*0U.*?d_can_is_tx_idle\(&can0\).*?d_system_reset\(\)') {
+    throw 'APP handoff reset must wait until the positive response has drained from CAN.'
 }
-if ($upgrade -notmatch '(?s)if\s*\(actual_crc16\s*==\s*expected_crc16\).*?UDS_UPGRADE_STATE_DRIVER_VERIFIED.*?else.*?UDS_UPGRADE_STATE_IDLE') {
-    throw 'A bad BMS-DUCAR CRC16 must not advance the protocol to the erase stage'
+foreach ($name in 'uds_upgrade.c', 'SID11_EcuReset.c', 'SID2E_WriteDataByIdentifier.c',
+    'SID31_RoutineControl.c', 'SID34_RequestDownload.c', 'SID36_TransferData.c',
+    'SID37_RequestTransferExit.c', 'SID3E_TesterPresent.c') {
+    $entry = $projectFiles | Where-Object { $_.FileName -eq $name } | Select-Object -First 1
+    if ($null -eq $entry -or $entry.FileOption.CommonProperty.IncludeInBuild -ne '0') {
+        throw "APP must leave BOOT-owned upgrade source out of its build: $name"
+    }
 }
-if ($upgrade -notmatch '(?s)if\s*\(s_state\s*!=\s*UDS_UPGRADE_STATE_DEPENDENCIES_VERIFIED\).*?return\s+FALSE.*?ducar_iap_prepare_boot_move') {
-    throw 'BOOT move metadata must not be prepared before successful whole-image CRC verification'
+if ($bootUds -notmatch '(?s)boot_upgrade_get_flag\(\)\s*!=\s*BOOT_UPGRADE_FLAG_WAIT_PACKAGE.*?return\s+false.*?uds_init\(\)') {
+    throw 'BOOT UDS must start only after APP has set WAIT_PACKAGE, or BOOT detects an invalid APP.'
 }
-if ($port -notmatch '(?s)network_task\(\);\s*service_task\(\);.*?s_uds_reset_after_tx\s*!=\s*0U.*?d_can_is_tx_idle\(&can0\).*?d_system_reset\(\)') {
-    throw 'Deferred reset must wait for the CAN TX mailboxes to drain in the 1 ms task'
+foreach ($sid in 'SID_2E', 'SID_31', 'SID_34', 'SID_36', 'SID_37') {
+    if ($bootServices -notmatch ('\{' + $sid + '\s*,')) {
+        throw "BOOT must retain upgrade service $sid after it takes over."
+    }
 }
-if ($tp -notmatch '(?s)static int send_singleframe.*?return uds_send_frame\(RESPONSE_ID,\s*send_buf,\s*FRAME_SIZE\).*?if \(msg_dlc < FRAME_SIZE\).*?return send_singleframe\(msg_buf,\s*msg_dlc\)') {
-    throw 'Single-frame response submission status must propagate back to SID11'
+if ($bootUpgrade -notmatch 'destination\s*=\s*BOOT_APP1_START_ADDR\s*\+\s*s_received_size') {
+    throw 'BOOT must write transferred APP bytes directly to APP1.'
 }
-if ($service -notmatch '(?s)uds_timer_run\(UDS_TIMER_S3server\)\s*<\s*0.*?uds_upgrade_reset_state\(\).*?service_28_reset\(\).*?service_85_reset\(\)') {
-    throw 'S3 timeout must reset download, CommunicationControl, and DTC setting states'
-}
-Write-Output 'UDS upgrade handoff contract: PASS'
+
+Write-Output 'APP-to-BOOT UDS handoff contract: PASS'

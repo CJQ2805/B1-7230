@@ -3,6 +3,8 @@ $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $logic = Join-Path $root 'app\N32G45x_KEIL\User_Src\Protocol\UDS\UDSLogic'
 $readDid = Get-Content -Raw -LiteralPath (Join-Path $logic 'SID22_ReadDataByIdentifier.c')
 $security = Get-Content -Raw -LiteralPath (Join-Path $logic 'SID27_SecurityAccess.c')
+$profileHeader = Get-Content -Raw -LiteralPath (Join-Path $logic 'uds_customer_profile.h')
+$profileSource = Get-Content -Raw -LiteralPath (Join-Path $logic 'uds_customer_profile.c')
 $serviceConfig = Get-Content -Raw -LiteralPath (Join-Path $logic 'service_cfg.c')
 
 function Assert-Contains([string]$Text, [string]$Pattern, [string]$Message) {
@@ -29,6 +31,9 @@ Assert-Contains $security '(?s)uds_positive_rsp\(rsp_buf,\s*2U\)\s*==\s*0\).*?se
 Assert-Contains $security '(?s)session == UDS_SESSION_EXT.*?UDS_LV1_REQUEST_SEED.*?UDS_LV1_SEND_KEY.*?\*level_out = UDS_SA_LV1' 'Extended Session must map only 27 01/02 to level 1.'
 Assert-Contains $security '(?s)session == UDS_SESSION_PROG.*?UDS_LV2_REQUEST_SEED.*?UDS_LV2_SEND_KEY.*?\*level_out = UDS_SA_LV2' 'Programming Session must map only 27 09/0A to level 2.'
 Assert-Contains $security 'subfunction != expected_key_subfunction' 'A key must match the pending seed subfunction pair.'
+Assert-Contains $profileHeader '(?m)^#define\s+UDS_CUSTOMER_KEY_CONST_VALID\s+1U' 'Security access must be enabled with verified customer DLL constants.'
+Assert-Contains $profileSource '(?s)0xACU,\s*0x89U,\s*0x18U,\s*0xF2U.*?0xE3U,\s*0xBBU,\s*0x25U,\s*0x40U' 'DLL KeyConst values for SecurityAccess levels 1 and 9 must both be present.'
+Assert-Contains $security 'pending_seed_subfunction\)\s*==\s*0' 'SecurityAccess must select the key constant using the seed subfunction.'
 
 $sessionControl = Get-Content -Raw -LiteralPath (Join-Path $logic 'SID10_SessionControl.c')
 Assert-Contains $sessionControl 'uds_security_reset\(\)' 'Changing diagnostic sessions must clear the security level and pending seed.'

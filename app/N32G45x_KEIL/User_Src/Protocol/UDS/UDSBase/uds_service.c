@@ -15,7 +15,6 @@
 #include "SID27_SecurityAccess.h"
 #include "SID28_CommunicationControl.h"
 #include "SID85_ControlDTCSetting.h"
-#include "uds_upgrade.h"
 
 
 // UDS 应用层相关定时计数器
@@ -344,7 +343,6 @@ void service_task(void)
 	{
 		set_current_session(UDS_SESSION_STD);
 		uds_security_reset();
-		uds_upgrade_reset_state();
 		service_28_on_s3_timeout();
 		service_85_reset();
 	}

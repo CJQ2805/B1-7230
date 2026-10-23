@@ -69,7 +69,7 @@ void service_11_EcuReset(const uint8_t* msg_buf, uint16_t msg_dlc)
         uds_negative_rsp(SID_11, NRC_CONDITIONS_NOT_CORRECT);
         return;
     }
-    if (!uds_upgrade_prepare_boot_move())
+    if (!uds_upgrade_mark_app1_ready())
     {
         uds_negative_rsp(SID_11, NRC_GENERAL_PROGRAMMING_FAILURE);
         return;

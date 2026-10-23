@@ -32,12 +32,14 @@ if ($port -match 'FlexCAN\.h|FLEXCAN0_transmit_msg') {
 if ($port -notmatch '(?s)d_can_send\(\s*&can0\s*,\s*response_id\s*,\s*D_CAN_ID_STANDARD') {
     throw 'UDS responses must be sent as standard frames through d_can'
 }
-if ($serviceCfgHeader -notmatch '(?m)^#define\s+SID_NUM\s+12\b') {
-    throw 'UDS service table must register the 12 services in the approved customer flow'
+if ($serviceCfgHeader -notmatch '(?m)^#define\s+SID_NUM\s+5\b') {
+    throw 'APP UDS service table must contain only the handoff and pre-handoff services'
 }
-foreach ($sid in 'SID_10', 'SID_11', 'SID_22', 'SID_27', 'SID_2E', 'SID_28',
-    'SID_31', 'SID_34', 'SID_36', 'SID_37', 'SID_3E', 'SID_85') {
+foreach ($sid in 'SID_10', 'SID_22', 'SID_27', 'SID_28', 'SID_85') {
     if ($serviceCfg -notmatch "\{\s*$sid\s*,") { throw "Approved UDS service is not registered: $sid" }
+}
+foreach ($sid in 'SID_11', 'SID_2E', 'SID_31', 'SID_34', 'SID_36', 'SID_37') {
+    if ($serviceCfg -match "\{\s*$sid\s*,") { throw "APP must not expose BOOT-owned upgrade service: $sid" }
 }
 foreach ($sid in 'SID_14', 'SID_18', 'SID_19', 'SID_2F') {
     if ($serviceCfg -match "\{\s*$sid\s*,") { throw "Unrequested UDS service remains registered: $sid" }
@@ -62,12 +64,10 @@ if ($security -match 'static\s+uint8_t\s+rand_u8\s*\(\s*void\s*\)\s*\{\s*//') {
 
 $requiredSources = @(
     'uds_port.c', 'uds_service.c', 'uds_tp.c', 'service_cfg.c',
-    'SID10_SessionControl.c', 'SID27_SecurityAccess.c',
-    'SID11_EcuReset.c', 'SID22_ReadDataByIdentifier.c', 'SID3E_TesterPresent.c',
-    'SID2E_WriteDataByIdentifier.c', 'SID28_CommunicationControl.c',
-    'SID31_RoutineControl.c', 'SID34_RequestDownload.c', 'SID36_TransferData.c',
-    'SID37_RequestTransferExit.c', 'SID85_ControlDTCSetting.c',
-    'uds_upgrade.c'
+    'SID10_SessionControl.c', 'SID22_ReadDataByIdentifier.c',
+    'SID27_SecurityAccess.c', 'SID28_CommunicationControl.c',
+    'SID85_ControlDTCSetting.c',
+    'uds_customer_profile.c'
 )
 $files = $project.SelectNodes('//File')
 foreach ($name in $requiredSources) {
@@ -78,7 +78,12 @@ foreach ($name in $requiredSources) {
     }
 }
 $excludedSources = @(
-    'SID14_ClearDiagnosticInformation.c', 'SID19_ReadDTCInformation.c'
+    'SID11_EcuReset.c', 'SID2E_WriteDataByIdentifier.c',
+    'SID31_RoutineControl.c', 'SID34_RequestDownload.c',
+    'SID36_TransferData.c', 'SID37_RequestTransferExit.c',
+    'uds_upgrade.c', 'SID3E_TesterPresent.c',
+    'SID14_ClearDiagnosticInformation.c',
+    'SID19_ReadDTCInformation.c'
 )
 foreach ($name in $excludedSources) {
     $entry = $files | Where-Object { $_.FileName -eq $name } | Select-Object -First 1

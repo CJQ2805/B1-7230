@@ -75,6 +75,29 @@ VECT_TAB_OFFSET=0x00010000
 
 如果 APP 还链接在 `0x08000000`，工具会认为 APP HEX 地址超出 APP1 允许范围并报错。
 
+## ZCANPRO UDS 升级
+
+运行以下脚本会依次编译 BOOT 和 APP、生成 DUCAR APP BIN、从 128 字节头包后提取裸 APP1 S19，并同步更新 `tool\boot.hex`：
+
+```text
+tool\build_uds_upgrade_package.bat
+```
+
+脚本默认使用 `E:\Keil_v5\UV4\uVision.com` 和当前用户的 Codex Python 运行时；也可以在运行前设置 `UVISION`、`PYTHON` 指向本机安装路径。完成后导入：
+
+```text
+tool\ZS_ECU_Flash_20250401.zflash
+```
+
+该 ZCANPRO 流程引用同目录的 `SeednKey.dll`、`BMS-DUCAR_FlashDriver.s19` 和 `A800000002_7230B1_V01_T12_APP1.s19`。APP S19 的数据从 `0x08010000` 开始，内容是 BIN 去掉 128 字节 DUCAR 头后的 APP；BOOT 直接写 APP1，并校验 APP CRC16。
+`SeednKey.dll` 是客户提供的 ZCANPRO 本地依赖，请放在 `tool` 同目录；源代码提交不包含该 DLL。
+
+构建脚本遇到任一 Keil 编译错误会停止，不会重新打包旧的 APP 输出文件。
+
+构建脚本开始时会先删除上次生成的 APP1 S19，避免链接失败后仍误导入旧升级镜像。
+
+当前目录此前生成的 `A800000002_7230B1_V01_T12_APP1_FROM_OLD_BIN.s19` 是从旧 T12 BIN 提取的，仅用于保留旧产物；它不包含本次安全访问修改，不能用于验证本次升级。需在 BOOT 与 APP 均成功链接、重新生成 BIN 后，再运行上述脚本生成可导入的最新 APP1 S19。
+
 ## 临时出包
 
 也可以像 GD 工具一样临时覆盖参数：

@@ -12,7 +12,6 @@
 #include "SID28_CommunicationControl.h"
 #include "SID85_ControlDTCSetting.h"
 #include "Protocol/IAP/ducar_uart_iap_protocol.h"
-#include "uds_upgrade.h"
 #include "uds_port.h"
 #include "uds_tp.h"
 
@@ -98,7 +97,6 @@ void service_10_SessionControl(const uint8_t* msg_buf, uint16_t msg_dlc)
     switch (subfunction)
 	{
 		case UDS_SESSION_STD:		// 01 默认会话
-            uds_upgrade_reset_state();
             service_28_reset();
             service_85_reset();
             set_current_session((uds_session_t)subfunction);
@@ -106,7 +104,7 @@ void service_10_SessionControl(const uint8_t* msg_buf, uint16_t msg_dlc)
 			uds_positive_rsp(rsp_buf, 6);
 			break;
 
-		case UDS_SESSION_PROG:		// 02 编程会话：开放当前项目定义的下载服务。
+		case UDS_SESSION_PROG:		// 02 编程会话：由BOOT接管后续下载。
             /* 宗申流程由APP返回50 02后交给BOOT；功能寻址不得触发复位交接。 */
             if (g_tatype == N_TATYPE_FUNCTIONAL)
             {
@@ -132,7 +130,6 @@ void service_10_SessionControl(const uint8_t* msg_buf, uint16_t msg_dlc)
                 uds_negative_rsp(SID_10, NRC_GENERAL_PROGRAMMING_FAILURE);
                 return;
             }
-            uds_upgrade_reset_state();
             service_28_reset();
             service_85_reset();
             set_current_session((uds_session_t)subfunction);
@@ -150,7 +147,6 @@ void service_10_SessionControl(const uint8_t* msg_buf, uint16_t msg_dlc)
 			break;
 
         case UDS_SESSION_EXT:		// 03 扩展会话
-            uds_upgrade_reset_state();
             service_28_reset();
             service_85_reset();
             if (get_current_session() != (uds_session_t)subfunction)

@@ -1527,7 +1527,7 @@
                   <RVCTZI>0</RVCTZI>
                   <RVCTOtherData>0</RVCTOtherData>
                   <ModuleSelection>0</ModuleSelection>
-                  <IncludeInBuild>1</IncludeInBuild>
+                  <IncludeInBuild>0</IncludeInBuild>
                   <AlwaysBuild>0</AlwaysBuild>
                   <GenerateAssemblyFile>0</GenerateAssemblyFile>
                   <AssembleAssemblyFile>0</AssembleAssemblyFile>
@@ -2007,7 +2007,7 @@
                   <RVCTZI>0</RVCTZI>
                   <RVCTOtherData>0</RVCTOtherData>
                   <ModuleSelection>0</ModuleSelection>
-                  <IncludeInBuild>1</IncludeInBuild>
+                  <IncludeInBuild>0</IncludeInBuild>
                   <AlwaysBuild>0</AlwaysBuild>
                   <GenerateAssemblyFile>0</GenerateAssemblyFile>
                   <AssembleAssemblyFile>0</AssembleAssemblyFile>
@@ -2087,7 +2087,7 @@
                   <RVCTZI>0</RVCTZI>
                   <RVCTOtherData>0</RVCTOtherData>
                   <ModuleSelection>0</ModuleSelection>
-                  <IncludeInBuild>1</IncludeInBuild>
+                  <IncludeInBuild>0</IncludeInBuild>
                   <AlwaysBuild>0</AlwaysBuild>
                   <GenerateAssemblyFile>0</GenerateAssemblyFile>
                   <AssembleAssemblyFile>0</AssembleAssemblyFile>
@@ -2167,7 +2167,7 @@
                   <RVCTZI>0</RVCTZI>
                   <RVCTOtherData>0</RVCTOtherData>
                   <ModuleSelection>0</ModuleSelection>
-                  <IncludeInBuild>1</IncludeInBuild>
+                  <IncludeInBuild>0</IncludeInBuild>
                   <AlwaysBuild>0</AlwaysBuild>
                   <GenerateAssemblyFile>0</GenerateAssemblyFile>
                   <AssembleAssemblyFile>0</AssembleAssemblyFile>
@@ -2247,7 +2247,7 @@
                   <RVCTZI>0</RVCTZI>
                   <RVCTOtherData>0</RVCTOtherData>
                   <ModuleSelection>0</ModuleSelection>
-                  <IncludeInBuild>1</IncludeInBuild>
+                  <IncludeInBuild>0</IncludeInBuild>
                   <AlwaysBuild>0</AlwaysBuild>
                   <GenerateAssemblyFile>0</GenerateAssemblyFile>
                   <AssembleAssemblyFile>0</AssembleAssemblyFile>
@@ -2327,7 +2327,7 @@
                   <RVCTZI>0</RVCTZI>
                   <RVCTOtherData>0</RVCTOtherData>
                   <ModuleSelection>0</ModuleSelection>
-                  <IncludeInBuild>1</IncludeInBuild>
+                  <IncludeInBuild>0</IncludeInBuild>
                   <AlwaysBuild>0</AlwaysBuild>
                   <GenerateAssemblyFile>0</GenerateAssemblyFile>
                   <AssembleAssemblyFile>0</AssembleAssemblyFile>
@@ -2407,7 +2407,7 @@
                   <RVCTZI>0</RVCTZI>
                   <RVCTOtherData>0</RVCTOtherData>
                   <ModuleSelection>0</ModuleSelection>
-                  <IncludeInBuild>1</IncludeInBuild>
+                  <IncludeInBuild>0</IncludeInBuild>
                   <AlwaysBuild>0</AlwaysBuild>
                   <GenerateAssemblyFile>0</GenerateAssemblyFile>
                   <AssembleAssemblyFile>0</AssembleAssemblyFile>
@@ -2519,7 +2519,7 @@
                   <RVCTZI>0</RVCTZI>
                   <RVCTOtherData>0</RVCTOtherData>
                   <ModuleSelection>0</ModuleSelection>
-                  <IncludeInBuild>1</IncludeInBuild>
+                  <IncludeInBuild>0</IncludeInBuild>
                   <AlwaysBuild>0</AlwaysBuild>
                   <GenerateAssemblyFile>0</GenerateAssemblyFile>
                   <AssembleAssemblyFile>0</AssembleAssemblyFile>

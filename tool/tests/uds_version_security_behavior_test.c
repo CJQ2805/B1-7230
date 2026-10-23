@@ -69,9 +69,17 @@ static void send_key(uint8_t subfunction, const uint8_t key[4])
     service_27_SecurityAccess(request, (uint16_t)sizeof(request));
 }
 
-static void calculate_key_for_seed(const uint8_t seed[4], uint8_t key[4])
+static void calculate_key_for_seed(uint8_t security_level,
+                                   const uint8_t seed[4],
+                                   uint8_t key[4])
 {
-    uds_customer_profile_calculate_key(seed, uds_customer_key_const, key);
+    const uint8_t *key_const = uds_customer_profile_get_key_const(security_level);
+
+    CHECK(key_const != NULL, "The requested customer security level must have a key constant.");
+    if (key_const != NULL)
+    {
+        uds_customer_profile_calculate_key(seed, key_const, key);
+    }
 }
 
 /* Transport/session/timer seams: production UDS handlers are linked below. */
@@ -120,6 +128,11 @@ void uds_timer_start(uds_timer_t timer)
 }
 
 uint32_t d_timer_get_ms(void)
+{
+    return ++mock_time_ms;
+}
+
+uint32_t uds_port_get_time_ms(void)
 {
     return ++mock_time_ms;
 }
@@ -183,7 +196,15 @@ static void test_level1_extended_session(void)
           "An out-of-sequence key must not unlock security.");
 
     send_seed(0x01U, seed);
-    calculate_key_for_seed(seed, key);
+    calculate_key_for_seed(0x09U, seed, key);
+    send_key(0x02U, key);
+    CHECK(last_nrc == NRC_INVALID_KEY,
+          "The Programming Session key constant must not unlock Extended Session level 1.");
+    CHECK(get_current_sa_lv() == UDS_SA_NON,
+          "A key calculated with the other security level must leave level 1 locked.");
+
+    send_seed(0x01U, seed);
+    calculate_key_for_seed(0x01U, seed, key);
 
     positive_response_result = -1;
     send_key(0x02U, key);
@@ -215,7 +236,7 @@ static void test_level2_programming_session_and_session_binding(void)
     mock_session = UDS_SESSION_EXT;
     uds_security_reset();
     send_seed(0x01U, seed);
-    calculate_key_for_seed(seed, key);
+    calculate_key_for_seed(0x01U, seed, key);
 
     /* Simulate a session switch without the normal reset hook: level mismatch must still reject. */
     mock_session = UDS_SESSION_PROG;
@@ -236,7 +257,15 @@ static void test_level2_programming_session_and_session_binding(void)
     }
 
     send_seed(0x09U, seed);
-    calculate_key_for_seed(seed, key);
+    calculate_key_for_seed(0x01U, seed, key);
+    send_key(0x0AU, key);
+    CHECK(last_nrc == NRC_INVALID_KEY,
+          "The Extended Session key constant must not unlock Programming Session level 2.");
+    CHECK(get_current_sa_lv() == UDS_SA_NON,
+          "A key calculated with the other security level must leave level 2 locked.");
+
+    send_seed(0x09U, seed);
+    calculate_key_for_seed(0x09U, seed, key);
     send_key(0x0AU, key);
     CHECK(last_response_length == 2U && last_response[0] == 0x67U &&
           last_response[1] == 0x0AU, "27 0A must positively respond after a valid key.");

@@ -19,7 +19,7 @@ uint8_t uds_upgrade_validate_erase_request(uint32_t target_address, uint32_t ima
 uint8_t uds_upgrade_erase_application(uint32_t target_address, uint32_t image_size);
 uint8_t uds_upgrade_check_programming_dependencies(void);
 bool_t uds_upgrade_image_verified(void);
-/* 历史接口名保留；BOOT UDS 现在记录并启动已直接写入 APP1 的镜像。 */
-bool_t uds_upgrade_prepare_boot_move(void);
+/* 记录APP1镜像的长度和CRC，并标记待验证启动；不搬运APP内容。 */
+bool_t uds_upgrade_mark_app1_ready(void);
 
 #endif

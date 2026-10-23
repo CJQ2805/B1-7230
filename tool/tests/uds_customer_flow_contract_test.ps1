@@ -7,57 +7,25 @@ $serviceHeader = Get-Content -Raw -LiteralPath (Join-Path $logic 'service_cfg.h'
 $serviceConfig = Get-Content -Raw -LiteralPath (Join-Path $logic 'service_cfg.c')
 $project = [xml](Get-Content -Raw -LiteralPath (Join-Path $app 'MDK-ARM\N32G45x.uvprojx'))
 
-if ($serviceHeader -notmatch '#define\s+SID_NUM\s+12') {
-    throw 'Customer UDS profile must register its 12 implemented services.'
+if ($serviceHeader -notmatch '#define\s+SID_NUM\s+5') {
+    throw 'APP UDS must register only the services needed before BOOT takes over.'
 }
-foreach ($sid in 'SID_10', 'SID_11', 'SID_22', 'SID_27', 'SID_2E', 'SID_28',
-    'SID_31', 'SID_34', 'SID_36', 'SID_37', 'SID_3E', 'SID_85') {
+foreach ($sid in 'SID_10', 'SID_22', 'SID_27', 'SID_28', 'SID_85') {
     if ($serviceConfig -notmatch ('\{' + $sid + '\s*,')) {
         throw "Customer UDS service is not registered: $sid"
     }
 }
 
-$transferExit = Get-Content -Raw -LiteralPath (Join-Path $logic 'SID37_RequestTransferExit.c')
-if ($transferExit -notmatch 'msg_dlc\s*==\s*1U' -or
-    $transferExit -notmatch 'uds_upgrade_transfer_exit\s*\(') {
-    throw 'Customer RequestTransferExit must be SID 37 with no payload and close the active transfer.'
-}
-
-$routine = Get-Content -Raw -LiteralPath (Join-Path $logic 'SID31_RoutineControl.c')
-foreach ($rid in '0x0202', '0xFF00', '0xFF01') {
-    if ($routine -notmatch [regex]::Escape($rid)) { throw "RoutineControl RID missing: $rid" }
-}
-if ($routine -notmatch 'uds_upgrade_validate_transfer_crc16' -or
-    $routine -notmatch 'uds_upgrade_erase_application' -or
-    $routine -notmatch 'uds_upgrade_check_programming_dependencies') {
-    throw 'RoutineControl must validate CRC16, erase the requested APP block, and check dependencies.'
-}
-
-$reset = Get-Content -Raw -LiteralPath (Join-Path $logic 'SID11_EcuReset.c')
-if ($reset -notmatch 'UDS_RESET_SOFT' -or $reset -notmatch '51') {
-    throw 'Customer programming completion must use ECUReset 11 03 / positive response 51 03.'
+$session = Get-Content -Raw -LiteralPath (Join-Path $logic 'SID10_SessionControl.c')
+if ($session -notmatch 'ducar_iap_prepare_boot_wait_package\(\)' -or
+    $session -notmatch 'uds_request_reset_after_tx\(\)' -or
+    $session -notmatch 'ducar_iap_cancel_boot_wait_package\(\)') {
+    throw 'APP must arm BOOT wait-package mode and reset only after the 50 02 response is queued.'
 }
 
 $readDid = Get-Content -Raw -LiteralPath (Join-Path $logic 'SID22_ReadDataByIdentifier.c')
 foreach ($did in '0xF180', '0xF18A', '0xF193', '0xF189') {
     if ($readDid -notmatch [regex]::Escape($did)) { throw "Customer DID missing: $did" }
-}
-
-$writeDid = Get-Content -Raw -LiteralPath (Join-Path $logic 'SID2E_WriteDataByIdentifier.c')
-if ($writeDid -notmatch '0xF184' -or
-    $writeDid -notmatch 'uds_upgrade_store_fingerprint' -or
-    $writeDid -notmatch 'UDS_CUSTOMER_FINGERPRINT_SIZE') {
-    throw 'F184 must persist the eight-byte fingerprint with the approved two-byte tag.'
-}
-
-$upgradeHeader = Get-Content -Raw -LiteralPath (Join-Path $logic 'uds_upgrade.h')
-$upgrade = Get-Content -Raw -LiteralPath (Join-Path $logic 'uds_upgrade.c')
-if ($upgradeHeader -notmatch 'uds_upgrade_validate_transfer_crc16' -or
-    $upgrade -notmatch 'APP_FLASH_MAP_APP2_START_ADDR' -or
-    $upgrade -notmatch 'uds_customer_profile_is_flash_driver' -or
-    $upgrade -notmatch 'uds_customer_profile_crc16' -or
-    $upgrade -notmatch 'APP_FLASH_TAG_UDS_DOWNLOAD_FINGERPRINT') {
-    throw 'Upgrade manager must recognize BMS-DUCAR, CRC16-check each transfer, and stage APP into APP2.'
 }
 
 $appCan = Get-Content -Raw -LiteralPath (Join-Path $app 'User_Src\App\app_can.c')
@@ -70,12 +38,22 @@ if ($appCan -notmatch 'uds_normal_receive_enabled' -or
 }
 
 $projectFiles = $project.SelectNodes('//File')
-foreach ($fileName in 'uds_customer_profile.c', 'uds_upgrade.c',
-    'SID2E_WriteDataByIdentifier.c', 'SID28_CommunicationControl.c',
-    'SID31_RoutineControl.c', 'SID85_ControlDTCSetting.c') {
+foreach ($fileName in 'uds_customer_profile.c', 'SID10_SessionControl.c',
+    'SID22_ReadDataByIdentifier.c', 'SID27_SecurityAccess.c',
+    'SID28_CommunicationControl.c', 'SID85_ControlDTCSetting.c') {
     $entry = $projectFiles | Where-Object { $_.FileName -eq $fileName } | Select-Object -First 1
     if ($null -eq $entry -or $entry.FileOption.CommonProperty.IncludeInBuild -ne '1') {
         throw "Keil application build must include $fileName"
+    }
+}
+
+foreach ($fileName in 'uds_upgrade.c', 'SID11_EcuReset.c', 'SID3E_TesterPresent.c',
+    'SID2E_WriteDataByIdentifier.c', 'SID31_RoutineControl.c',
+    'SID34_RequestDownload.c', 'SID36_TransferData.c',
+    'SID37_RequestTransferExit.c') {
+    $entry = $projectFiles | Where-Object { $_.FileName -eq $fileName } | Select-Object -First 1
+    if ($null -eq $entry -or $entry.FileOption.CommonProperty.IncludeInBuild -ne '0') {
+        throw "APP must leave BOOT-owned upgrade source out of its build: $fileName"
     }
 }
 
