@@ -78,7 +78,7 @@ def main() -> int:
         "input",
         nargs="?",
         type=Path,
-        default=tool_dir / "A800000002_7230B1_V01_T12.bin",
+        default=tool_dir.parent / "A800000002_7230B1_V01_T12.bin",
         help="DUCAR-wrapped APP BIN (defaults to the current T12 tool BIN)",
     )
     parser.add_argument(

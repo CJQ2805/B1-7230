@@ -141,7 +141,7 @@
  <item type="download">
   <desc>flashdriverœ¬‘ÿ</desc>
   <functionaddr>false</functionaddr>
-  <file>BMS-DUCAR_FlashDriver.s19</file>
+  <file>..\BMS-DUCAR_FlashDriver.s19</file>
   <dataFormatIdentifier>0</dataFormatIdentifier>
   <addresssize>4</addresssize>
   <lengthsize>4</lengthsize>
