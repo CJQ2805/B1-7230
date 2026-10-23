@@ -16,8 +16,8 @@
 #include "Driver/d_can.h"
 
 #define ZS_B1_CAN_DLC                 8U
-/* 暂停宗申B1标准帧主动发送；保留状态机以维护现有休眠判断。 */
-#define ZS_B1_ACTIVE_TX_ENABLE        0U
+/* 启用宗申B1标准帧定时主动发送。 */
+#define ZS_B1_ACTIVE_TX_ENABLE        1U
 #define ZS_B1_ID_BMS_FAULT            0x019U
 #define ZS_B1_ID_BMS_STATUS1          0x089U
 #define ZS_B1_ID_BMS_STATUS2          0x619U
