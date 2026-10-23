@@ -18,7 +18,7 @@
 /* 额定容量   mAh*/
 #define APP_PARAM_BAT_CAPACITY         30000   //30Ah
 
-/* 宗申B1主动通信：电流归零且没有新的DETD/DETC接入触发达到该时间后停止发送，单位ms。 */
+/* 宗申B1主动通信：KEY缺失时，电流归零达到该时间后停止发送，单位ms。 */
 #define APP_PARAM_ZS_B1_TX_IDLE_TIMEOUT_MS (1UL * 60UL * 1000UL)
 /* UDS诊断总开关：0表示不初始化、不收发且不运行UDS；1表示启用安全诊断服务。 */
 #define APP_PARAM_UDS_ENABLE           1U

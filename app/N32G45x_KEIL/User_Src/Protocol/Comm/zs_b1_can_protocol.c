@@ -1,6 +1,7 @@
 /*
  * 宗申多电池 CAN B1 协议：只负责客户侧标准帧主动发送，不接管 DUCAR 扩展帧。
- * 调度周期为 1ms，由 Comm_Task 调用；快照每10ms更新，协议始终读取一致副本。
+ * 调度周期为 1ms，由 Comm_Task 调用；KEY在位时持续主动发送，KEY缺失时按电流空闲超时停止。
+ * 快照每10ms更新，协议始终读取一致副本。
  */
 #include "Protocol/Comm/zs_b1_can_protocol.h"
 
@@ -865,6 +866,7 @@ void zs_b1_can_protocol_task(void)
     app_bms_snapshot_t snapshot;
     uint8_t detd;
     uint8_t detc;
+    uint8_t key_present;
     bool input_rising;
     uint8_t has_business_current;
     bool charge_context;
@@ -873,6 +875,7 @@ void zs_b1_can_protocol_task(void)
     app_bms_snapshot_read(&snapshot);
     detd = (snapshot.signal.input.mcu_detd != 0U) ? 1U : 0U;
     detc = (snapshot.signal.input.mcu_detc != 0U) ? 1U : 0U;
+    key_present = (snapshot.signal.input.mcu_key_present != 0U) ? 1U : 0U;
     input_rising = (((detd != 0U) && (s_zs_b1_can.previous_detd == 0U)) ||
                     ((detc != 0U) && (s_zs_b1_can.previous_detc == 0U)));
     s_zs_b1_can.previous_detd = detd;
@@ -885,7 +888,11 @@ void zs_b1_can_protocol_task(void)
                      zs_b1_has_charge_fault(&snapshot) ||
                      (s_zs_b1_can.charger_fault_report_latched != 0U)));
 
-    /* 电流或插拔沿是一次新活动，允许结束过的会话重新启动。 */
+    /* KEY在位允许会话立即启动；电流或插拔沿仍按原逻辑解除空闲锁存。 */
+    if (key_present != 0U)
+    {
+        s_zs_b1_can.session_idle_latched = 0U;
+    }
     if ((input_rising != false) || (has_business_current != 0U))
     {
         s_zs_b1_can.session_idle_latched = 0U;
@@ -894,7 +901,8 @@ void zs_b1_can_protocol_task(void)
 
     if ((s_zs_b1_can.tx_active == 0U) &&
         (s_zs_b1_can.session_idle_latched == 0U) &&
-        (input_rising || (has_business_current != 0U) || charge_event))
+        ((key_present != 0U) || input_rising ||
+         (has_business_current != 0U) || charge_event))
     {
         zs_b1_start_session();
     }
@@ -912,13 +920,16 @@ void zs_b1_can_protocol_task(void)
 
     if (s_zs_b1_can.low_current_ms >= APP_PARAM_ZS_B1_TX_IDLE_TIMEOUT_MS)
     {
-        /* 只停止宗申周期报文；本地低功耗管理接手判断STOP条件，不发送0x419。 */
-        s_zs_b1_can.tx_active = 0U;
         s_zs_b1_can.idle_timeout_complete = 1U;
-        s_zs_b1_can.session_idle_latched = 1U;
-        s_zs_b1_can.due_100ms_mask = 0U;
-        s_zs_b1_can.due_500ms_mask = 0U;
-        return;
+        /* KEY持续在位时忽略电流空闲停止；KEY缺失时仍按原60秒规则停发。 */
+        if (key_present == 0U)
+        {
+            s_zs_b1_can.tx_active = 0U;
+            s_zs_b1_can.session_idle_latched = 1U;
+            s_zs_b1_can.due_100ms_mask = 0U;
+            s_zs_b1_can.due_500ms_mask = 0U;
+            return;
+        }
     }
 
     zs_b1_schedule_periodic(&snapshot);

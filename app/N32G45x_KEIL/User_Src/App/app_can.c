@@ -194,7 +194,7 @@ void CAN_TransmitTask(void)
      */
     ducar_can_bus_timer_handle();
     ducar_can_data_renew();
-    /* 宗申B1客户主动发送按电流及DETD/DETC接入触发状态机调度。 */
+    /* 宗申B1主动发送受KEY状态门控；KEY缺失时保留电流及DETD/DETC原触发逻辑。 */
     zs_b1_can_protocol_task();
     ducar_can_iap_protocol_task();
     u8IapBusy = ducar_can_iap_protocol_is_busy() ? 1U : 0U;
