@@ -17,6 +17,7 @@
 #include "App/app_param.h"
 #include "App/app_current_calib.h"
 #include "App/app_bms_obc.h"
+#include "App/app_input_signals.h"
 #include "Protocol/Comm/ducar_can_protocol.h"
 #include "Protocol/Comm/zs_b1_can_protocol.h"
 #include "Protocol/IAP/ducar_can_iap_protocol.h"
@@ -28,10 +29,14 @@ typedef enum
 {
     APP_CAN_ID_NONE = 0U,
     APP_CAN_ID_OBC,
+    APP_CAN_ID_ECM_STATUS6,
     APP_CAN_ID_UDS,
     APP_CAN_ID_DUCAR_NORMAL,
     APP_CAN_ID_DUCAR_IAP
 } app_can_id_type_t;
+
+#define APP_CAN_ECM_STATUS6_RX_CAN_ID  0x105U
+#define APP_CAN_ECM_STATUS6_RX_DLC     8U
 
 /* Comm_Task约1ms调用一次CAN任务，诊断每1000次汇总输出，避免逐帧刷屏。 */
 static uint16_t s_app_can_tx_diag_ticks;
@@ -55,6 +60,12 @@ static app_can_id_type_t app_can_id_check(const t_can_packet *ptCanPacket)
         if (ptCanPacket->u32id == APP_BMS_OBC_RX_CAN_ID)
         {
             return APP_CAN_ID_OBC;
+        }
+
+        /* ECM_Status6 0x105为KEY在位心跳，标准帧优先于UDS路由。 */
+        if (ptCanPacket->u32id == APP_CAN_ECM_STATUS6_RX_CAN_ID)
+        {
+            return APP_CAN_ID_ECM_STATUS6;
         }
 
 #if (APP_PARAM_UDS_ENABLE == 1U)
@@ -119,7 +130,8 @@ void CAN_ReceiveTask(void)
         eCanIdType = app_can_id_check(&tCanPacket);
         /* 升级期间只分发IAP帧，防止普通请求在静默结束后形成待发报文。 */
         if (ducar_can_iap_protocol_is_busy() &&
-            (eCanIdType != APP_CAN_ID_DUCAR_IAP))
+            (eCanIdType != APP_CAN_ID_DUCAR_IAP) &&
+            (eCanIdType != APP_CAN_ID_ECM_STATUS6))
         {
             continue;
         }
@@ -127,6 +139,13 @@ void CAN_ReceiveTask(void)
         if (eCanIdType == APP_CAN_ID_OBC)
         {
             app_bms_obc_receive(tCanPacket.au8data, tCanPacket.u8len);
+        }
+        else if (eCanIdType == APP_CAN_ID_ECM_STATUS6)
+        {
+            if (tCanPacket.u8len == APP_CAN_ECM_STATUS6_RX_DLC)
+            {
+                app_input_signals_note_can_key_frame();
+            }
         }
         else if (eCanIdType == APP_CAN_ID_DUCAR_NORMAL)
         {

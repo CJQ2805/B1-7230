@@ -5,6 +5,8 @@
  */
 #include "App/app_input_signals.h"
 #include "Board/board_io.h"
+#include "cmsis_os.h"
+#include "task.h"
 #include <string.h>
 
 #define APP_INPUT_SIGNAL_SAMPLE_PERIOD_MS             10U
@@ -20,6 +22,10 @@
 #define APP_INPUT_SIGNAL_MCU_SW_PRESENT_HOLD_TIME_MS  5000U
 #define APP_INPUT_SIGNAL_MCU_SW_PRESENT_HOLD_COUNT    \
     (APP_INPUT_SIGNAL_MCU_SW_PRESENT_HOLD_TIME_MS / APP_INPUT_SIGNAL_SAMPLE_PERIOD_MS)
+#define APP_INPUT_SIGNAL_CAN_KEY_TIMEOUT_MS            3000UL
+#define APP_INPUT_SIGNAL_CAN_KEY_TIMEOUT_TICKS         \
+    ((uint32_t)((((uint64_t)APP_INPUT_SIGNAL_CAN_KEY_TIMEOUT_MS * \
+                   (uint64_t)osKernelSysTickFrequency) + 999U) / 1000U))
 
 /* 物理检测输入为高电平表示未接入/已移除。 */
 #define APP_INPUT_SIGNAL_MCU_DET_LOAD_REMOVED_LEVEL   1U
@@ -41,6 +47,8 @@ static uint8_t s_mcu_sw_pressed;
 static uint8_t s_mcu_sw_present;
 static uint16_t s_mcu_sw_debounce_count;
 static uint16_t s_mcu_sw_release_count;
+static uint32_t s_mcu_key_last_rx_tick;
+static uint8_t s_mcu_key_frame_seen;
 
 volatile app_input_signals_t gt_app_input_signals;
 
@@ -124,6 +132,24 @@ static void app_input_signals_update_mcu_sw(void)
     gt_app_input_signals.mcu_sw_present = s_mcu_sw_present;
 }
 
+static void app_input_signals_update_mcu_key(void)
+{
+    uint32_t now_tick;
+    uint32_t last_rx_tick;
+    uint8_t frame_seen;
+
+    taskENTER_CRITICAL();
+    now_tick = osKernelSysTick();
+    last_rx_tick = s_mcu_key_last_rx_tick;
+    frame_seen = s_mcu_key_frame_seen;
+    taskEXIT_CRITICAL();
+
+    gt_app_input_signals.mcu_key_present =
+        ((frame_seen != 0U) &&
+         ((uint32_t)(now_tick - last_rx_tick) < APP_INPUT_SIGNAL_CAN_KEY_TIMEOUT_TICKS))
+            ? 1U : 0U;
+}
+
 void app_input_signals_init(void)
 {
     memset((void *)&gt_app_input_signals, 0, sizeof(gt_app_input_signals));
@@ -135,6 +161,16 @@ void app_input_signals_init(void)
     s_mcu_sw_present = 0U;
     s_mcu_sw_debounce_count = 0U;
     s_mcu_sw_release_count = 0U;
+    s_mcu_key_last_rx_tick = 0U;
+    s_mcu_key_frame_seen = 0U;
+}
+
+void app_input_signals_note_can_key_frame(void)
+{
+    taskENTER_CRITICAL();
+    s_mcu_key_last_rx_tick = osKernelSysTick();
+    s_mcu_key_frame_seen = 1U;
+    taskEXIT_CRITICAL();
 }
 
 void app_input_signals_load_detect_rearm(void)
@@ -192,4 +228,5 @@ void app_input_signals_update(void)
         (board_io_mcu_2nd_det_level() == 0U) ? 1U : 0U;
 
     app_input_signals_update_mcu_sw();
+    app_input_signals_update_mcu_key();
 }

@@ -777,8 +777,8 @@ static void ducar_can_send_f218(void)
     {
         au8CanData[0] |= (uint8_t)(1U << 6U);
     }
-    /* bit7：按键在位标志。 */
-    if (tBmsSnapshot.signal.input.mcu_sw_present != 0U)
+    /* bit7：KEY在位；由ECM_Status6 0x105最近3秒内的接收状态判断。 */
+    if (tBmsSnapshot.signal.input.mcu_key_present != 0U)
     {
         au8CanData[0] |= (uint8_t)(1U << 7U);
     }
