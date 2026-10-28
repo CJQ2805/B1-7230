@@ -30,7 +30,7 @@
 #define BOOT_UPGRADE_FLAG_APP1_READY   ((uint32_t)0xDDDDDDDDUL)
 
 /* BOOT侧本机软件品号；A000000000作为未定义品号时的强制升级通配品号。 */
-#define BOOT_PARAM_SOFTWARE_PN          "A000000000"
+#define BOOT_PARAM_SOFTWARE_PN          "A800000002"
 
 /* App1代码区：0x08010000~0x0803F000，共188K。 */
 #define BOOT_APP1_START_ADDR           ((uint32_t)0x08010000UL)

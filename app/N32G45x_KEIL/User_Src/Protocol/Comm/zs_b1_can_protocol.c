@@ -135,7 +135,6 @@ static bool zs_b1_has_charge_fault(const app_bms_snapshot_t *snapshot)
             (charge_a->b1pack_pro_utc != 0U) ||
             (charge_b->b1pack_pro_pov != 0U) ||
             (charge_b->b1pack_occ_lock != 0U) ||
-            (charge_b->b1pack_pro_roc != 0U) ||
             (general_a->b1NTC_fault != 0U));
 }
 
@@ -325,16 +324,6 @@ static uint8_t zs_b1_fault_cell_uv_level(const t_bms_fault_flag *fault)
     return 0U;
 }
 
-static uint8_t zs_b1_fault_discharge_cell_uv_protection_level(const t_bms_fault_flag *fault)
-{
-    const t_discharge_fault_A *fault_a = &fault->udischarge_fault_A.tdischarge_fault_A;
-
-    /* 字段16只支持一级和二级单体欠压保护；深度欠压通过PF字段单独上报。 */
-    if (fault_a->b1cell_pro_cuv2 != 0U) return 2U;
-    if (fault_a->b1cell_pro_cuv1 != 0U) return 1U;
-    return 0U;
-}
-
 static uint8_t zs_b1_fault_discharge_oc_level(const t_bms_fault_flag *fault)
 {
     const t_discharge_fault_A *fault_a = &fault->udischarge_fault_A.tdischarge_fault_A;
@@ -352,7 +341,7 @@ static uint8_t zs_b1_fault_charge_oc_level(const t_bms_fault_flag *fault)
     const t_charge_fault_B *fault_b = &fault->ucharge_fault_B.tcharge_fault_B;
     if (fault_a->b1pack_pro_occ2 != 0U) return 2U;
     if ((fault_a->b1pack_pro_occ1 != 0U) || (fault_a->b1pack_pro_orcc != 0U) ||
-        (fault_b->b1pack_pro_roc != 0U) || (fault_b->b1pack_occ_lock != 0U)) return 1U;
+        (fault_b->b1pack_occ_lock != 0U)) return 1U;
     return 0U;
 }
 
@@ -386,6 +375,7 @@ static bool zs_b1_send_fault(const app_bms_snapshot_t *snapshot)
 {
     const t_bms_fault_flag *fault = &snapshot->fault.active.detail;
     const t_charge_fault_A *charge_a = &fault->ucharge_fault_A.tcharge_fault_A;
+    const t_charge_fault_B *charge_b = &fault->ucharge_fault_B.tcharge_fault_B;
     const t_discharge_fault_A *discharge_a = &fault->udischarge_fault_A.tdischarge_fault_A;
     const t_discharge_fault_B *discharge_b = &fault->udischarge_fault_B.tdischarge_fault_B;
     const t_general_fault_A *general_a = &fault->ugeneral_fault_A.tgeneral_fault_A;
@@ -395,14 +385,16 @@ static bool zs_b1_send_fault(const app_bms_snapshot_t *snapshot)
     uint8_t discharge_temp_level = zs_b1_fault_temp_level(discharge_a->b1pack_war_otd,
                                                            discharge_a->b1pack_pro_otd,
                                                            general_a->b1OTD_FUSE);
-    uint8_t discharge_under_temp_level = (discharge_a->b1pack_pro_utd != 0U) ? 1U : 0U;
-    uint8_t charge_under_temp_level = (charge_a->b1pack_pro_utc != 0U) ? 1U : 0U;
     uint8_t discharge_uv_level = zs_b1_fault_cell_uv_level(fault);
-    uint8_t discharge_cell_uv_protection_level =
-        zs_b1_fault_discharge_cell_uv_protection_level(fault);
-    uint8_t discharge_temp_protection_level =
-        ((discharge_a->b1pack_pro_otd != 0U) || (general_a->b1OTD_FUSE != 0U)) ? 1U : 0U;
-    uint8_t charge_temp_protection_level = (charge_a->b1pack_pro_otc != 0U) ? 1U : 0U;
+    uint8_t discharge_under_temp_level = zs_b1_fault_temp_level(discharge_a->b1pack_war_utd,
+                                                                 discharge_a->b1pack_pro_utd,
+                                                                 0U);
+    uint8_t charge_under_temp_level = zs_b1_fault_temp_level(charge_a->b1pack_war_utc,
+                                                              charge_a->b1pack_pro_utc,
+                                                              0U);
+    uint8_t charge_temp_level = zs_b1_fault_temp_level(charge_a->b1pack_war_otc,
+                                                        charge_a->b1pack_pro_otc,
+                                                        0U);
     uint8_t discharge_fault_level = zs_b1_fault_discharge_level(
         fault, snapshot->fault.active.discharge_pro);
     uint8_t work_mode = 0U;
@@ -484,12 +476,19 @@ static bool zs_b1_send_fault(const app_bms_snapshot_t *snapshot)
                         ((charge_status & 0x03U) << 2U) |
                         ((power_status & 0x03U) << 4U));
 
-    /* Data3 fields 9-12/15暂不使用；13/14分别报告单体二级过压和深度欠压PF来源。 */
-    if (charge_a->b1cell_pro_cov2 != 0U) data[3] |= 0x10U;
-    if (discharge_a->b1cell_deep_cuv != 0U) data[3] |= 0x20U;
-    data[4] = (uint8_t)((discharge_cell_uv_protection_level & 0x03U) |
-                        ((discharge_temp_protection_level & 0x03U) << 2U) |
-                        ((charge_temp_protection_level & 0x03U) << 4U) |
+    /* Data3 bit0..3：总压过压/欠压状态，来源分别是总压保护标志。 */
+    if (charge_b->b1pack_pro_pov != 0U) data[3] |= 0x01U;
+    if (discharge_b->b1pack_pro_cuv != 0U) data[3] |= 0x02U;
+    if (charge_b->b1pack_pro_pov != 0U) data[3] |= 0x04U;
+    if (discharge_b->b1pack_pro_cuv != 0U) data[3] |= 0x08U;
+    /* Data3 bit4/5：充/放电单体过压；两种工作状态共用单体过压保护源。 */
+    if ((charge_a->b1cell_pro_cov != 0U) || (charge_a->b1cell_pro_cov2 != 0U))
+        data[3] |= 0x30U;
+    /* Data3 bit6/7：充电单体欠压等级；Data4 bit0/1：放电单体欠压等级。 */
+    data[3] |= (uint8_t)((discharge_uv_level & 0x03U) << 6U);
+    data[4] = (uint8_t)((discharge_uv_level & 0x03U) |
+                        ((discharge_temp_level & 0x03U) << 2U) |
+                        ((charge_temp_level & 0x03U) << 4U) |
                         ((discharge_under_temp_level & 0x03U) << 6U));
     data[5] = (uint8_t)((charge_under_temp_level & 0x03U) |
                         ((charge_oc_level & 0x03U) << 2U) |
@@ -537,7 +536,6 @@ static bool zs_b1_send_status1(const app_bms_snapshot_t *snapshot)
                        (snapshot->valid_cells >= snapshot->cell_count));
     bool no_feedback_protection =
         ((charge_a->b1pack_pro_orcc != 0U) ||
-         (charge_b->b1pack_pro_roc != 0U) ||
          (charge_a->b1cell_pro_cov != 0U) ||
          (charge_a->b1cell_pro_cov2 != 0U) ||
          (charge_b->b1pack_pro_pov != 0U) ||
@@ -553,6 +551,7 @@ static bool zs_b1_send_status1(const app_bms_snapshot_t *snapshot)
     if (!data_valid || zs_b1_fault_any(&snapshot->fault.active)) status = 2U;
     else if (snapshot->bms_work_status == APP_BMS_STATUS_CHARGE) status = 1U;
     else if (snapshot->bms_work_status == APP_BMS_STATUS_DISCHARGE) status = 4U;
+    else if (snapshot->bms_work_status == APP_BMS_STATUS_FEEDBACK) status = 8U;
     data[0] |= (uint8_t)(status << 4U);
 
     /* 放电电流：bit8..19，0.25A/bit。 */

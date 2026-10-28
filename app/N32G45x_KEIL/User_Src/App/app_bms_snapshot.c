@@ -446,7 +446,7 @@ static void app_bms_snapshot_update_sop(app_bms_snapshot_t *ptSnapshot)
     ptSnapshot->sop.u16MaxRechargeCurrent10mA =
         gt_app_sop.u16max_recharge_current01A;
     ptSnapshot->sop.u32MaxChargeVoltageMv =
-        gt_app_sop.u32max_charge_voltage;
+        APP_PARAM_MAX_CHARGE_VOLTAGE_MV;
 }
 
 static void app_bms_snapshot_update_signal(app_bms_snapshot_t *snapshot)

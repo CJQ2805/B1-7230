@@ -211,7 +211,7 @@ static void test_status_feedback_reports_only_valid_dsg_mos_state(void)
     CHECK(packet != 0 && (packet->au8data[2] & 0x30U) == 0x00U);
 }
 
-static void test_reserved_fault_fields_and_pf_voltage_sources(void)
+static void test_fault_frame_reports_pack_and_cell_voltage_sources(void)
 {
     const t_can_packet *packet;
 
@@ -223,17 +223,17 @@ static void test_reserved_fault_fields_and_pf_voltage_sources(void)
     sample.fault.active.detail.ucharge_fault_A.tcharge_fault_A.b1cell_war_cov = 1U;
     sample.fault.active.detail.ucharge_fault_A.tcharge_fault_A.b1cell_pro_cov = 1U;
     packet = transmit_fault_frame();
-    CHECK(packet != 0 && packet->au8data[3] == 0x00U);
+    CHECK(packet != 0 && packet->au8data[3] == 0x3FU);
 
     reset_case();
     sample.fault.active.detail.ucharge_fault_A.tcharge_fault_A.b1cell_pro_cov2 = 1U;
     sample.fault.active.detail.udischarge_fault_A.tdischarge_fault_A.b1cell_deep_cuv = 1U;
     packet = transmit_fault_frame();
-    CHECK(packet != 0 && (packet->au8data[3] & 0x30U) == 0x30U);
-    CHECK((packet->au8data[3] & 0xCFU) == 0U); /* 9-12 and 15 are unused. */
+    CHECK(packet != 0 && packet->au8data[3] == 0xF0U);
+    CHECK((packet->au8data[4] & 0x03U) == 0x03U);
 }
 
-static void test_discharge_cell_uv_field_reports_only_levels_one_and_two(void)
+static void test_cell_uv_fields_report_all_three_levels(void)
 {
     const t_can_packet *packet;
 
@@ -241,22 +241,26 @@ static void test_discharge_cell_uv_field_reports_only_levels_one_and_two(void)
     sample.fault.active.detail.udischarge_fault_A.tdischarge_fault_A.b1cell_war_cuv = 1U;
     sample.fault.active.detail.udischarge_fault_A.tdischarge_fault_A.b1cell_pro_cuv1 = 1U;
     packet = transmit_fault_frame();
-    CHECK(packet != 0 && (packet->au8data[4] & 0x03U) == 0x01U);
+    CHECK(packet != 0);
+    CHECK((packet->au8data[3] & 0xC0U) == 0x40U);
+    CHECK((packet->au8data[4] & 0x03U) == 0x01U);
 
     reset_case();
     sample.fault.active.detail.udischarge_fault_A.tdischarge_fault_A.b1cell_pro_cuv2 = 1U;
     packet = transmit_fault_frame();
-    CHECK(packet != 0 && (packet->au8data[4] & 0x03U) == 0x02U);
+    CHECK(packet != 0);
+    CHECK((packet->au8data[3] & 0xC0U) == 0x80U);
+    CHECK((packet->au8data[4] & 0x03U) == 0x02U);
 
     reset_case();
     sample.fault.active.detail.udischarge_fault_A.tdischarge_fault_A.b1cell_deep_cuv = 1U;
     packet = transmit_fault_frame();
     CHECK(packet != 0);
-    CHECK((packet->au8data[4] & 0x03U) == 0x00U); /* Third level is omitted here. */
-    CHECK((packet->au8data[3] & 0x20U) != 0U); /* Deep-UV PF remains reported in field 14. */
+    CHECK((packet->au8data[3] & 0xC0U) == 0xC0U);
+    CHECK((packet->au8data[4] & 0x03U) == 0x03U);
 }
 
-static void test_overtemperature_fields_report_protection_as_level_one(void)
+static void test_overtemperature_fields_report_warning_and_protection_levels(void)
 {
     const t_can_packet *packet;
 
@@ -264,20 +268,20 @@ static void test_overtemperature_fields_report_protection_as_level_one(void)
     sample.fault.active.detail.udischarge_fault_A.tdischarge_fault_A.b1pack_war_otd = 1U;
     sample.fault.active.detail.ucharge_fault_A.tcharge_fault_A.b1pack_war_otc = 1U;
     packet = transmit_fault_frame();
-    CHECK(packet != 0 && (packet->au8data[4] & 0x3CU) == 0x00U);
+    CHECK(packet != 0 && (packet->au8data[4] & 0x3CU) == 0x14U);
 
     reset_case();
     sample.fault.active.detail.udischarge_fault_A.tdischarge_fault_A.b1pack_pro_otd = 1U;
     packet = transmit_fault_frame();
-    CHECK(packet != 0 && (packet->au8data[4] & 0x0CU) == 0x04U);
+    CHECK(packet != 0 && (packet->au8data[4] & 0x0CU) == 0x08U);
 
     reset_case();
     sample.fault.active.detail.ucharge_fault_A.tcharge_fault_A.b1pack_pro_otc = 1U;
     packet = transmit_fault_frame();
-    CHECK(packet != 0 && (packet->au8data[4] & 0x30U) == 0x10U);
+    CHECK(packet != 0 && (packet->au8data[4] & 0x30U) == 0x20U);
 }
 
-static void test_under_temperature_fault_fields_report_protection_only_as_level_one(void)
+static void test_under_temperature_fault_fields_report_warning_and_protection_levels(void)
 {
     const t_can_packet *packet;
 
@@ -286,16 +290,16 @@ static void test_under_temperature_fault_fields_report_protection_only_as_level_
     sample.fault.active.detail.ucharge_fault_A.tcharge_fault_A.b1pack_war_utc = 1U;
     packet = transmit_fault_frame();
     CHECK(packet != 0);
-    CHECK((packet->au8data[4] & 0xC0U) == 0x00U);
-    CHECK((packet->au8data[5] & 0x03U) == 0x00U);
+    CHECK((packet->au8data[4] & 0xC0U) == 0x40U);
+    CHECK((packet->au8data[5] & 0x03U) == 0x01U);
 
     reset_case();
     sample.fault.active.detail.udischarge_fault_A.tdischarge_fault_A.b1pack_pro_utd = 1U;
     sample.fault.active.detail.ucharge_fault_A.tcharge_fault_A.b1pack_pro_utc = 1U;
     packet = transmit_fault_frame();
     CHECK(packet != 0);
-    CHECK((packet->au8data[4] & 0xC0U) == 0x40U);
-    CHECK((packet->au8data[5] & 0x03U) == 0x01U);
+    CHECK((packet->au8data[4] & 0xC0U) == 0x80U);
+    CHECK((packet->au8data[5] & 0x03U) == 0x02U);
 }
 
 static void test_charge_overcurrent_fault_field_uses_two_levels_and_maps_lock_to_level_one(void)
@@ -319,9 +323,9 @@ static void test_charge_overcurrent_fault_field_uses_two_levels_and_maps_lock_to
     CHECK(packet != 0 && (packet->au8data[5] & 0x0CU) == 0x04U);
 
     reset_case();
-    sample.fault.active.detail.ucharge_fault_B.tcharge_fault_B.b1pack_pro_roc = 1U;
+    sample.fault.active.detail.ucharge_fault_B.tcharge_fault_B.b1reserved_roc_pro = 1U;
     packet = transmit_fault_frame();
-    CHECK(packet != 0 && (packet->au8data[5] & 0x0CU) == 0x04U);
+    CHECK(packet != 0 && (packet->au8data[5] & 0x0CU) == 0x00U);
 
     reset_case();
     sample.fault.active.detail.ucharge_fault_A.tcharge_fault_A.b1pack_pro_occ1 = 1U;
@@ -694,10 +698,10 @@ int main(void)
     test_fault_level_maps_discharge_warning_and_protection();
     test_charge_status_uses_bms_status_and_full_charge_has_priority();
     test_status_feedback_reports_only_valid_dsg_mos_state();
-    test_reserved_fault_fields_and_pf_voltage_sources();
-    test_discharge_cell_uv_field_reports_only_levels_one_and_two();
-    test_overtemperature_fields_report_protection_as_level_one();
-    test_under_temperature_fault_fields_report_protection_only_as_level_one();
+    test_fault_frame_reports_pack_and_cell_voltage_sources();
+    test_cell_uv_fields_report_all_three_levels();
+    test_overtemperature_fields_report_warning_and_protection_levels();
+    test_under_temperature_fault_fields_report_warning_and_protection_levels();
     test_charge_overcurrent_fault_field_uses_two_levels_and_maps_lock_to_level_one();
     test_discharge_overcurrent_fault_field_maps_protection_levels_and_saturates_at_three();
     test_voltage_difference_field_distinguishes_warning_and_protection();

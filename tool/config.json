@@ -6,6 +6,7 @@
     "app_hex": "app\\N32G45x_KEIL\\MDK-ARM\\Objects\\N32G45x.hex",
     "boot_hex": "boot\\Projects\\MDK\\Objects\\boot.hex",
     "copy_boot_hex": "tool\\boot.hex",
+    "app1_s19": "tool\\uds_upgrade\\rt5_crc32_release.s19",
     "output_dir": "tool",
     "magic": "DUCAR"
   }

@@ -16,14 +16,33 @@ internal static class Program
     private const int PartLen = 10;
     private const int CrcOffset = 31;
     private const int SizeOffset = 35;
+    private const uint App1StartAddress = 0x08010000U;
+    private const uint App1EndAddress = 0x0803F000U;
+    private const uint SramStartAddress = 0x20000000U;
+    private const uint SramEndAddress = 0x20024000U;
+    private const int App1S19DataSize = 32;
 
     private static int Main(string[] args)
     {
         try
         {
             Options options = Options.Parse(args);
-            Pack(options);
+            byte[] raw = File.ReadAllBytes(options.InputPath);
+            bool generateApp1S19 = !string.IsNullOrWhiteSpace(options.App1S19Path) &&
+                                   !string.IsNullOrWhiteSpace(options.FactoryHexPath);
+
+            if (generateApp1S19)
+            {
+                if (File.Exists(options.App1S19Path))
+                {
+                    File.Delete(options.App1S19Path);
+                }
+                ValidateApp1Image(raw);
+            }
+
+            Pack(options, raw);
             GenerateFactoryHexIfNeeded(options);
+            GenerateApp1S19IfNeeded(options, raw);
             return 0;
         }
         catch (Exception ex)
@@ -34,9 +53,8 @@ internal static class Program
         }
     }
 
-    private static void Pack(Options options)
+    private static void Pack(Options options, byte[] raw)
     {
-        byte[] raw = File.ReadAllBytes(options.InputPath);
         byte[] header = BuildHeader(raw, options.PartNumber, options.Magic);
         int payloadSize = AlignUp(raw.Length, PageSize);
         string outDir = Path.GetDirectoryName(Path.GetFullPath(options.OutputPath));
@@ -66,6 +84,114 @@ internal static class Program
         Console.WriteLine("size  : " + raw.Length + " bytes");
         Console.WriteLine("crc32 : 0x" + crc32.ToString("X8"));
         Console.WriteLine("total : " + (HeaderSize + payloadSize) + " bytes");
+    }
+
+    private static void ValidateApp1Image(byte[] app)
+    {
+        uint stackPointer;
+        uint resetVector;
+        uint resetAddress;
+
+        if (app.Length < 8)
+        {
+            throw new ArgumentException("APP BIN太短，缺少向量表");
+        }
+
+        if ((uint)app.Length > (App1EndAddress - App1StartAddress))
+        {
+            throw new ArgumentException("APP BIN超出APP1空间");
+        }
+
+        stackPointer = ReadLe32(app, 0);
+        resetVector = ReadLe32(app, 4);
+        if ((stackPointer < SramStartAddress) || (stackPointer > SramEndAddress))
+        {
+            throw new ArgumentException("APP初始栈指针不在SRAM范围内: 0x" + stackPointer.ToString("X8"));
+        }
+
+        resetAddress = resetVector & ~1U;
+        if ((resetAddress < App1StartAddress) ||
+            (resetAddress >= (App1StartAddress + (uint)app.Length)))
+        {
+            throw new ArgumentException("APP复位向量不在APP1镜像内: 0x" + resetVector.ToString("X8"));
+        }
+
+        if ((resetVector & 1U) == 0U)
+        {
+            throw new ArgumentException("APP复位向量不是Thumb地址: 0x" + resetVector.ToString("X8"));
+        }
+    }
+
+    private static uint ReadLe32(byte[] data, int offset)
+    {
+        return (uint)data[offset] |
+               ((uint)data[offset + 1] << 8) |
+               ((uint)data[offset + 2] << 16) |
+               ((uint)data[offset + 3] << 24);
+    }
+
+    private static void GenerateApp1S19IfNeeded(Options options, byte[] app)
+    {
+        if (string.IsNullOrWhiteSpace(options.App1S19Path) ||
+            string.IsNullOrWhiteSpace(options.FactoryHexPath))
+        {
+            return;
+        }
+
+        string outputDirectory = Path.GetDirectoryName(Path.GetFullPath(options.App1S19Path));
+        if (!string.IsNullOrEmpty(outputDirectory))
+        {
+            Directory.CreateDirectory(outputDirectory);
+        }
+
+        using (StreamWriter writer = new StreamWriter(options.App1S19Path, false, Encoding.ASCII))
+        {
+            writer.WriteLine(CreateSRecord(0, 0U, 2, Encoding.ASCII.GetBytes("DUCAR-APP1")));
+
+            uint recordCount = 0U;
+            for (int offset = 0; offset < app.Length; offset += App1S19DataSize)
+            {
+                int count = Math.Min(App1S19DataSize, app.Length - offset);
+                byte[] data = new byte[count];
+                Array.Copy(app, offset, data, 0, count);
+                writer.WriteLine(CreateSRecord(3, App1StartAddress + (uint)offset, 4, data));
+                recordCount++;
+            }
+
+            writer.WriteLine(CreateSRecord(5, recordCount, 2, new byte[0]));
+            writer.WriteLine(CreateSRecord(7, ReadLe32(app, 4), 4, new byte[0]));
+        }
+
+        Console.WriteLine("APP1 S19     : " + Path.GetFullPath(options.App1S19Path));
+    }
+
+    private static string CreateSRecord(int recordType, uint address, int addressSize, byte[] data)
+    {
+        List<byte> fields = new List<byte>(addressSize + data.Length + 2);
+        int sum;
+
+        fields.Add((byte)(addressSize + data.Length + 1));
+        for (int shift = (addressSize - 1) * 8; shift >= 0; shift -= 8)
+        {
+            fields.Add((byte)((address >> shift) & 0xFFU));
+        }
+        fields.AddRange(data);
+
+        sum = 0;
+        for (int i = 0; i < fields.Count; i++)
+        {
+            sum += fields[i];
+        }
+        fields.Add((byte)(~sum & 0xFF));
+
+        StringBuilder record = new StringBuilder(2 + (fields.Count * 2));
+        record.Append('S');
+        record.Append(recordType.ToString());
+        for (int i = 0; i < fields.Count; i++)
+        {
+            record.Append(fields[i].ToString("X2"));
+        }
+        return record.ToString();
     }
 
     private static void GenerateFactoryHexIfNeeded(Options options)
@@ -452,6 +578,7 @@ internal static class Program
         public string AppHexPath = "";
         public string CopyBootHexPath = "";
         public string FactoryHexPath = "";
+        public string App1S19Path = "";
         private bool inputPathFromArgs;
         private bool factoryHexFromArgs;
 
@@ -523,6 +650,7 @@ internal static class Program
             FillString(node, new string[] { "app_hex" }, delegate(string value) { AppHexPath = ResolveProjectPath(value); });
             FillString(node, new string[] { "copy_boot_hex", "tool_boot_hex" }, delegate(string value) { CopyBootHexPath = ResolveProjectPath(value); });
             FillString(node, new string[] { "factory_hex" }, delegate(string value) { FactoryHexPath = ResolveProjectPath(value); });
+            FillString(node, new string[] { "app1_s19" }, delegate(string value) { App1S19Path = ResolveProjectPath(value); });
             FillString(node, new string[] { "output_dir" }, delegate(string value) { OutputDir = ResolveProjectPath(value); });
             FillString(node, new string[] { "output_base" }, delegate(string value) { OutputBase = ResolveProjectPath(value); });
             FillString(node, new string[] { "output" }, delegate(string value) { OutputPath = ResolveProjectPath(value); });

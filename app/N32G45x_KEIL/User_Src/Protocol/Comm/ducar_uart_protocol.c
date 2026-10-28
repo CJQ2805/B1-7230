@@ -476,6 +476,18 @@ static void ducar_bms_get_temp_extreme_0p1k(const uint16_t *temp_0p1k, uint8_t c
     }
 }
 
+/* 0x05通道1/2/3依次对应AFE_NTC、MCU_NTC1和MCU_NTC2。 */
+static uint8_t ducar_bms_temperature_ntc_fault_bit(uint8_t temperature_index)
+{
+    switch (temperature_index)
+    {
+        case 0U: return APP_BMS_NTC_FAULT_AFE;
+        case 1U: return APP_BMS_NTC_FAULT_CELL1;
+        case 2U: return APP_BMS_NTC_FAULT_CELL2;
+        default: return 0U;
+    }
+}
+
 /* 将容量值转换为协议使用的无符号32位值。 */
 static uint32_t ducar_bms_capacity_to_u32(long capacity_mah)
 {
@@ -603,6 +615,8 @@ static void ducar_bms_reply_temperature(uint8_t cmd)
     uint16_t au16Temperature0p1k[MAX_TEMP_NUM];
     uint16_t u16MaximumTemperature0p1k;
     uint16_t u16MinimumTemperature0p1k;
+    uint16_t u16TemperatureToSend0p1k;
+    uint8_t u8NtcFaultBit;
     uint8_t u8TemperatureIndex;
 
     const app_bms_snapshot_t *ptSnapshot = ducar_bms_snapshot_get();
@@ -624,8 +638,11 @@ static void ducar_bms_reply_temperature(uint8_t cmd)
          u8TemperatureIndex < MAX_TEMP_NUM;
          u8TemperatureIndex++)
     {
+        u8NtcFaultBit = ducar_bms_temperature_ntc_fault_bit(u8TemperatureIndex);
         au16Temperature0p1k[u8TemperatureIndex] = DUCAR_BMS_TEMP_INVALID_0P1K;
-        if ((ptSnapshot->temp_valid_mask & (uint8_t)(1U << u8TemperatureIndex)) != 0U)
+        if (((u8NtcFaultBit == 0U) ||
+             ((ptSnapshot->ntc.fault_mask & u8NtcFaultBit) == 0U)) &&
+            ((ptSnapshot->temp_valid_mask & (uint8_t)(1U << u8TemperatureIndex)) != 0U))
         {
             au16Temperature0p1k[u8TemperatureIndex] =
                 ducar_bms_temp_0p1c_to_0p1k(ptSnapshot->temp_0p1c[u8TemperatureIndex]);
@@ -643,9 +660,17 @@ static void ducar_bms_reply_temperature(uint8_t cmd)
          u8TemperatureIndex < MAX_TEMP_NUM;
          u8TemperatureIndex++)
     {
+        u16TemperatureToSend0p1k = au16Temperature0p1k[u8TemperatureIndex];
+        u8NtcFaultBit = ducar_bms_temperature_ntc_fault_bit(u8TemperatureIndex);
+        if ((u8NtcFaultBit != 0U) &&
+            ((ptSnapshot->ntc.fault_mask & u8NtcFaultBit) != 0U))
+        {
+            /* 故障通道对外显示-40℃；极值已在上方按有效采样单独计算。 */
+            u16TemperatureToSend0p1k = ducar_bms_temp_0p1c_to_0p1k((int16_t)-400);
+        }
         ducar_bms_put_u16(au8ResponseData,
                           &u8ResponseLength,
-                          au16Temperature0p1k[u8TemperatureIndex]); /* DATA[4..9]：温度1、温度2、温度3。 */
+                          u16TemperatureToSend0p1k); /* DATA[4..9]：温度1、温度2、温度3。 */
     }
 
     ducar_bms_send_frame(cmd, au8ResponseData, u8ResponseLength);
@@ -1124,17 +1149,32 @@ static uint32_t ducar_bms_log_protocol_warning(const log_rtd_t *log)
         return u32WarningFlags;
     }
 
-    u32WarningFlags |= ((uint32_t)log->sw_warn.bit.dsgoc1 << 0);   /* Bit0：放电过流告警。 */
-    u32WarningFlags |= ((uint32_t)log->sw_warn.bit.chgoc  << 1);   /* Bit1：充电过流告警。 */
-    u32WarningFlags |= ((uint32_t)log->sw_warn.bit.dsgot  << 2);   /* Bit2：放电高温告警。 */
-    u32WarningFlags |= ((uint32_t)log->sw_warn.bit.chgot  << 3);   /* Bit3：充电高温告警。 */
-    u32WarningFlags |= ((uint32_t)log->sw_warn.bit.dsgut  << 4);   /* Bit4：放电低温告警。 */
-    u32WarningFlags |= ((uint32_t)log->sw_warn.bit.chgut  << 5);   /* Bit5：充电低温告警。 */
-    u32WarningFlags |= ((uint32_t)log->sw_warn.bit.mos_ot << 6);   /* Bit6：MOS过温告警。 */
-    u32WarningFlags |= ((uint32_t)log->sw_warn.bit.ntc_warn << 7); /* Bit7：NTC_Warning。 */
-    u32WarningFlags |= ((uint32_t)log->sw_warn.bit.celluv << 8);   /* Bit8：单体欠压告警，使用协议预留位。 */
-    u32WarningFlags |= ((uint32_t)log->sw_warn.bit.cellov1 << 9);  /* Bit9：单体过压告警，使用协议预留位。 */
-    u32WarningFlags |= ((uint32_t)log->sw_warn.bit.unbalance << 10); /* Bit10：单体压差告警，使用协议预留位。 */
+    u32WarningFlags |= ((uint32_t)log->sw_warn.bit.dsgoc1 << 0);     /* Bit0：放电过流告警。 */
+    u32WarningFlags |= ((uint32_t)log->sw_warn.bit.chgoc << 1);     /* Bit1：普通充电过流告警。 */
+    u32WarningFlags |= ((uint32_t)log->sw_warn.bit.dsgot << 2);     /* Bit2：放电高温告警。 */
+    u32WarningFlags |= ((uint32_t)log->sw_warn.bit.chgot << 3);     /* Bit3：充电高温告警。 */
+    u32WarningFlags |= ((uint32_t)log->sw_warn.bit.dsgut << 4);     /* Bit4：放电低温告警。 */
+    u32WarningFlags |= ((uint32_t)log->sw_warn.bit.chgut << 5);     /* Bit5：充电低温告警。 */
+    u32WarningFlags |= ((uint32_t)log->sw_warn.bit.mos_ot << 6);    /* Bit6：MOS过温告警。 */
+    u32WarningFlags |= ((uint32_t)log->sw_warn.bit.ntc_warn << 7);  /* Bit7：NTC告警。 */
+
+    if (log->reserved_store[0] == LOG_WARN_MAP_VERSION_V1)
+    {
+        /* Bit8~13使用协议预留位，分别表达此前被合并的告警来源。 */
+        u32WarningFlags |= ((uint32_t)log->sw_warn.bit.celluv << 8);      /* Bit8：单体欠压告警。 */
+        u32WarningFlags |= ((uint32_t)log->sw_warn.bit.packuv << 9);      /* Bit9：总压欠压告警。 */
+        u32WarningFlags |= ((uint32_t)log->sw_warn.bit.cellov1 << 10);    /* Bit10：单体过压告警。 */
+        u32WarningFlags |= ((uint32_t)log->sw_warn.bit.packov << 11);     /* Bit11：总压过压告警。 */
+        u32WarningFlags |= ((uint32_t)log->sw_warn.bit.unbalance << 12);  /* Bit12：单体压差告警。 */
+        u32WarningFlags |= ((uint32_t)log->sw_warn.bit.recharge_oc << 13);/* Bit13：回馈过流告警。 */
+    }
+    else
+    {
+        /* 旧Flash记录的单体/总压及普通/回馈电流告警是合并状态，按旧位序兼容导出。 */
+        u32WarningFlags |= ((uint32_t)log->sw_warn.bit.celluv << 8);      /* Bit8：旧格式单体/总压欠压汇总。 */
+        u32WarningFlags |= ((uint32_t)log->sw_warn.bit.cellov1 << 9);     /* Bit9：旧格式单体/总压过压汇总。 */
+        u32WarningFlags |= ((uint32_t)log->sw_warn.bit.unbalance << 10);  /* Bit10：旧格式单体压差告警。 */
+    }
 
     return u32WarningFlags;
 }

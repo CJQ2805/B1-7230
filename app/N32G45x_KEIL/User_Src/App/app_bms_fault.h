@@ -34,8 +34,8 @@ typedef struct
     uint16_t b1pack_war_pov  : 1; /* 总压过压告警。 */
     uint16_t b1pack_pro_pov  : 1; /* 总压过压保护。 */
     uint16_t b1pack_occ_lock : 1; /* 充电过流锁定。 */
-    uint16_t b1pack_war_roc  : 1; /* 充电反向电流告警。 */
-    uint16_t b1pack_pro_roc  : 1; /* 充电反向电流保护。 */
+    uint16_t b1reserved_roc_war : 1; /* 未使用，保留原位号以维持后续字段布局。 */
+    uint16_t b1reserved_roc_pro : 1; /* 当前无置位来源，保留原位号以维持后续字段布局。 */
     uint16_t b3unnused1      : 3;
     uint16_t b8unnused2      : 8;
 } t_charge_fault_B;

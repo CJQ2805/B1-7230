@@ -21,8 +21,8 @@ $CanProtocolText = Get-Content -Raw -LiteralPath $CanProtocol
 $BootCanText = Get-Content -Raw -LiteralPath $BootCan
 $BootManageText = Get-Content -Raw -LiteralPath $BootManage
 
-if ($AppCanIapText -notmatch 'DUCAR_CAN_IAP_TIMEOUT_MS\s+\(\(uint32_t\)300000UL\)') {
-    throw 'APP CAN IAP must abort an inactive upgrade session after five minutes.'
+if ($AppCanIapText -notmatch 'DUCAR_CAN_IAP_TIMEOUT_MS\s+\(\(uint32_t\)10000UL\)') {
+    throw 'APP CAN IAP must abort an inactive upgrade session after ten seconds.'
 }
 
 $TransmitTaskStart = $AppCanText.IndexOf('void CAN_TransmitTask(void)')
@@ -41,16 +41,16 @@ if ($TransmitTaskText -notmatch 'if\s*\(\s*\(u8IapBusy\s*==\s*0U\)\s*&&[\s\S]*?\
 
 $ReceiveGate = [regex]::Match(
     $AppCanText,
-    'ducar_can_iap_protocol_is_busy\(\)\s*&&\s*\(eCanIdType\s*!=\s*APP_CAN_ID_DUCAR_IAP\)\s*\)\s*\{\s*continue;')
+    'ducar_can_iap_protocol_is_busy\(\)\s*&&\s*\(eCanIdType\s*!=\s*APP_CAN_ID_DUCAR_IAP\)\s*&&\s*\(eCanIdType\s*!=\s*APP_CAN_ID_ECM_STATUS6\)\s*\)\s*\{\s*continue;')
 if (-not $ReceiveGate.Success) {
-    throw 'APP CAN must ignore non-IAP requests while keeping the IAP receive path active.'
+    throw 'APP CAN must ignore non-IAP requests except the 0x105 KEY heartbeat while IAP is active.'
 }
 
 if ($AppCanText -notmatch 'ducar_can_protocol_set_iap_silence\(u8IapBusy\s*!=\s*0U\)') {
     throw 'APP CAN must clear stale normal replies on entry to the IAP silent window.'
 }
 
-if ($AppCanText -notmatch 'ducar_can_iap_protocol_receive\(&tCanPacket\);[\s\S]{0,180}ducar_can_iap_protocol_is_busy\(\)[\s\S]{0,100}ducar_can_protocol_set_iap_silence\(true\)') {
+if ($AppCanText -notmatch 'ducar_can_iap_protocol_receive\(&tCanPacket\);[\s\S]{0,180}ducar_can_iap_protocol_is_busy\(\)[\s\S]{0,180}ducar_can_protocol_set_iap_silence\(true\)') {
     throw 'APP CAN must enter the low-level transmit silence as soon as an IAP frame starts a session.'
 }
 

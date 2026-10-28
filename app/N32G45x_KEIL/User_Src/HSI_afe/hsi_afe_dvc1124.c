@@ -20,6 +20,7 @@
 #include "Middle/m_delay.h"
 #include "hsi_ntc.h"
 #include "RTT/SEGGER_RTT.h"
+#include "Driver/d_timer.h"
 
 #define IIC_SLAVE_ADDRESS 0x40
 #define NoUsed 0
@@ -548,7 +549,7 @@ function    : 获取GP口采样温度
 **************************************************************************************/
 
 /* 根据GP3电压、1.8V参考和修调上拉电阻计算NTC温度，并返回异常来源。 */
-hsi_afe_dvc1124_ntc_status_t hsi_afe_dvc1124_CalcTemp(m_soft_i2c_t *i2c, int16_t *temp)
+static hsi_afe_dvc1124_ntc_status_t hsi_afe_dvc1124_sample_temp(m_soft_i2c_t *i2c, int16_t *temp)
 {
 	float fV1p8Voltage;
 	float fVgpVoltage;
@@ -596,6 +597,33 @@ hsi_afe_dvc1124_ntc_status_t hsi_afe_dvc1124_CalcTemp(m_soft_i2c_t *i2c, int16_t
 	*temp = (int16_t)(hsi_ntc_get_temp(gt_hsi_ntc_map_2, (uint32_t)fNtcResistanceOhm) * 0.1f);
 	return HSI_AFE_DVC1124_NTC_STATUS_VALID;
 
+}
+
+/* 在采样点输出状态变化，避免10ms日志任务错过短暂异常；不改变告警/保护判定。 */
+hsi_afe_dvc1124_ntc_status_t hsi_afe_dvc1124_CalcTemp(m_soft_i2c_t *i2c, int16_t *temp)
+{
+	static uint8_t s_diag_inited;
+	static hsi_afe_dvc1124_ntc_status_t s_last_status;
+	hsi_afe_dvc1124_ntc_status_t status = hsi_afe_dvc1124_sample_temp(i2c, temp);
+
+	if ((s_diag_inited == 0U) || (status != s_last_status))
+	{
+		uint8_t read_ok = ((status == HSI_AFE_DVC1124_NTC_STATUS_VALID) ||
+						   (status == HSI_AFE_DVC1124_NTC_STATUS_ELECTRICAL_FAULT)) ? 1U : 0U;
+		s_diag_inited = 1U;
+		s_last_status = status;
+		/* reads_ok=0时寄存器镜像可能过期，不能据此判定NTC开路/短路。 */
+		SEGGER_RTT_printf(0,
+			"NTC_AFE tick=%lums status=%u(0=invalid,1=valid,2=electrical,3=iic) reads_ok=%u v1p8_raw=%u gp3_raw=%u trim=%u temp=%dC\r\n",
+			(unsigned long)d_timer_get_ms(), (unsigned int)status, (unsigned int)read_ok,
+			(unsigned int)(((uint16_t)gt_hsi_afe_dvc1124_regs.R15_16.V1P8_H << 8) |
+				gt_hsi_afe_dvc1124_regs.R15_16.V1P8_L),
+			(unsigned int)(((uint16_t)gt_hsi_afe_dvc1124_regs.R17_28.VGP[2].VGP_H << 8) |
+				gt_hsi_afe_dvc1124_regs.R17_28.VGP[2].VGP_L),
+			(unsigned int)gt_hsi_afe_dvc1124_regs.R126.F1RT,
+			(int)((temp != 0) ? *temp : INVALID_TEMPERATURE));
+	}
+	return status;
 }
 /**************************************************************************************
 date        : 2024-11-30

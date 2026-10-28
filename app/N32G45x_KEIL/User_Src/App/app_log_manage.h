@@ -10,6 +10,7 @@
 #define LOG_CHGDSG_NUM                  5U
 #define LOG_RTD_PAYLOAD_SIZE            70U  /* 实时快照业务结构体固定70字节。 */
 #define LOG_RTD_STORE_SIZE              92U  /* 底层槽位：16字节记录头 + 70字节业务数据 + 4字节提交标志，再按4字节对齐。 */
+#define LOG_WARN_MAP_VERSION_V1         1U  /* 软件告警按单体/总压及普通/回馈电流分别记录。 */
 
 /* 快照触发来源，写入deg_data[0]，后续导出LOG时可以知道这条记录为什么保存。 */
 typedef enum
@@ -17,8 +18,8 @@ typedef enum
     LOG_TRIGGER_FAULT_SET = 1,      /* 故障位从0变1。 */
     LOG_TRIGGER_FAULT_CLEAR,        /* 故障位从1变0。 */
     LOG_TRIGGER_FAULT_BOTH,         /* 同一轮同时存在故障置位和清除。 */
-    LOG_TRIGGER_SIGNAL_CHANGE,      /* 外部状态或MOS状态变化。 */
-    LOG_TRIGGER_RESET,              /* 上电检测到独立看门狗复位。 */
+    LOG_TRIGGER_SIGNAL_CHANGE,      /* 已停用；保留编号4供历史日志解码。 */
+    LOG_TRIGGER_RESET,              /* 非纯上电复位的独立启动记录。 */
     LOG_TRIGGER_SOFT_SHUTDOWN = 6   /* 用户或协议请求软关机。 */
 } log_trigger_t;
 
@@ -74,20 +75,20 @@ typedef union
         uint32_t dsgot         : 1; /* 放电高温告警。 */
         uint32_t dsgut         : 1; /* 放电低温告警。 */
         uint32_t sc            : 1; /* 短路告警预留，当前没有告警源。 */
-        uint32_t celluv        : 1; /* 单体或总压欠压告警。 */
-        uint32_t celluv2       : 1; /* 二级欠压告警预留，当前没有告警源。 */
-        uint32_t chgoc         : 1; /* 充电过流或反向电流告警。 */
+        uint32_t celluv        : 1; /* 单体欠压；旧格式记录中此位曾表示单体或总压欠压。 */
+        uint32_t packuv        : 1; /* 总压欠压；旧格式记录中此位为预留0。 */
+        uint32_t chgoc         : 1; /* 普通充电过流；旧格式记录中此位还包含回馈过流。 */
         uint32_t chgot         : 1; /* 充电高温告警。 */
         uint32_t chgut         : 1; /* 充电低温告警。 */
-        uint32_t cellov1       : 1; /* 单体或总压过压告警。 */
-        uint32_t cellov2       : 1; /* 二级过压告警预留，当前没有告警源。 */
+        uint32_t cellov1       : 1; /* 单体过压；旧格式记录中此位曾表示单体或总压过压。 */
+        uint32_t packov        : 1; /* 总压过压；旧格式记录中此位为预留0。 */
         uint32_t ovpf          : 1; /* 过压永久故障告警预留。 */
         uint32_t chgmosfail    : 1; /* 充电MOS失效告警预留。 */
         uint32_t dsgmosfail    : 1; /* 放电MOS失效告警预留。 */
         uint32_t badcell       : 1; /* 单体异常告警预留。 */
         uint32_t unbalance     : 1; /* 单体压差告警。 */
         uint32_t ntc_warn      : 1; /* 仅一路NTC电气异常，属于NTC-Warning，不执行保护。 */
-        uint32_t r4            : 1; /* 保留位。 */
+        uint32_t recharge_oc   : 1; /* 回馈过流；旧格式记录中此位为预留0。 */
         uint32_t mos_ot        : 1; /* MOS过温告警。 */
         uint32_t aps_dsgoc     : 1; /* 辅助电源放电过流告警预留。 */
         uint32_t aps_sc        : 1; /* 辅助电源短路告警预留。 */
@@ -234,7 +235,7 @@ typedef struct
     uint16_t dsg_port_vol;     /* 放电口电压，单位：0.1V。 */
     uint8_t sys_clk;           /* 当前系统主频，单位：MHz。 */
     uint8_t deg_data[4];       /* 降级/通信/扩展诊断数据。 */
-    uint8_t reserved_store[13]; /* 业务结构体扩展预留，使快照固定为70字节。 */
+    uint8_t reserved_store[13]; /* [0]软件告警映射版本；其余扩展预留，使快照固定为70字节。 */
     uint8_t checksum;          /* 业务层简单校验，底层另有CRC。 */
 } log_rtd_t;
 

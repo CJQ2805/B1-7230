@@ -141,7 +141,7 @@
  <item type="download">
   <desc>flashdriver下载</desc>
   <functionaddr>false</functionaddr>
-  <file>..\BMS-DUCAR_FlashDriver.s19</file>
+  <file>FlsDrv.s19</file>
   <dataFormatIdentifier>0</dataFormatIdentifier>
   <addresssize>4</addresssize>
   <lengthsize>4</lengthsize>
@@ -173,7 +173,7 @@
  <item type="download">
   <desc>app下载</desc>
   <functionaddr>false</functionaddr>
-  <file>A800000002_7230B1_V01_T12_APP1.s19</file>
+  <file>rt5_crc32_release.s19</file>
   <dataFormatIdentifier>0</dataFormatIdentifier>
   <addresssize>4</addresssize>
   <lengthsize>4</lengthsize>
@@ -198,8 +198,8 @@
   <functionaddr>false</functionaddr>
   <is_crc_cmd>true</is_crc_cmd>
   <sid>31</sid>
-  <desc>CRC校验</desc>
-  <data>01 02 02 </data>
+  <desc>APP CRC校验</desc>
+  <data>01 02 02 45 9A </data>
   <suppress_response>false</suppress_response>
  </item>
  <item type="general">

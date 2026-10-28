@@ -21,8 +21,8 @@
 #include "Protocol/IAP/ducar_uart_iap_protocol.h"
 
 #define DUCAR_CAN_IAP_DATA_DLC                 ((uint8_t)8U)
-/* Upgrade session expires after five minutes without a valid IAP frame. */
-#define DUCAR_CAN_IAP_TIMEOUT_MS              ((uint32_t)300000UL)
+/* Upgrade session expires after ten seconds without a valid IAP frame. */
+#define DUCAR_CAN_IAP_TIMEOUT_MS              ((uint32_t)10000UL)
 #define DUCAR_CAN_IAP_TX_RETRY_TICKS          ((uint8_t)20U)
 #define DUCAR_CAN_IAP_TP_RTS                  ((uint8_t)0x10U)
 #define DUCAR_CAN_IAP_TP_CTS                  ((uint8_t)0x11U)
@@ -687,8 +687,9 @@ static void ducar_can_iap_receive_rts(const t_can_packet *ptCanPacket)
 
     /* Data1~Data2为本页132字节总长度。 */
     u16PageMessageLength = ducar_can_iap_read_u16_le(&ptCanPacket->au8data[1]);
-    /* 只有等待页、长度132、包数19同时满足时才接受RTS。 */
-    if ((eCanIapState != DUCAR_CAN_IAP_STATE_WAIT_PAGE) ||
+    /* 等待新页或重启未收完的页时，只接受132字节、19包的RTS。 */
+    if (((eCanIapState != DUCAR_CAN_IAP_STATE_WAIT_PAGE) &&
+         (eCanIapState != DUCAR_CAN_IAP_STATE_RECEIVING_PAGE)) ||
         (u16PageMessageLength != DUCAR_CAN_IAP_PAGE_MESSAGE_LEN) ||
         (ptCanPacket->au8data[3] != DUCAR_CAN_IAP_PAGE_PACKET_COUNT))
     {
@@ -699,7 +700,15 @@ static void ducar_can_iap_receive_rts(const t_can_packet *ptCanPacket)
         return;
     }
 
-    /* 新页开始时清空132字节页缓存，最后一帧不足7字节部分保持FF。 */
+    /* 已有应答待发时保留该应答，避免重复RTS覆盖尚未发送的CTS。 */
+    if ((eCanIapState == DUCAR_CAN_IAP_STATE_RECEIVING_PAGE) &&
+        (eCanIapTxState != DUCAR_CAN_IAP_TX_IDLE))
+    {
+        u32CanIapLastActivityMs = d_timer_get_ms();
+        return;
+    }
+
+    /* 新页或重传页都从序号1重新接收，丢弃之前未收完的页数据。 */
     memset(au8CanIapPageBuffer, 0xFF, sizeof(au8CanIapPageBuffer));
     /* 保存本页主机地址、长度和DT总包数。 */
     u8CanIapHostAddress = ducar_can_iap_get_sa(ptCanPacket);
@@ -812,9 +821,10 @@ bool ducar_can_iap_protocol_is_packet(const t_can_packet *ptCanPacket)
         return true;
     }
 
-    /* RTS只允许在等待新页时接收，并且必须来自PC、指向DF00数据传输目标。 */
+    /* 等待新页或接收未完成页时接受RTS，以便重发CTS恢复丢失的握手。 */
     if ((u8Pf == DUCAR_CAN_PF_TP_CM) &&
-        (eCanIapState == DUCAR_CAN_IAP_STATE_WAIT_PAGE) &&
+        ((eCanIapState == DUCAR_CAN_IAP_STATE_WAIT_PAGE) ||
+         (eCanIapState == DUCAR_CAN_IAP_STATE_RECEIVING_PAGE)) &&
         (ptCanPacket->au8data[0] == DUCAR_CAN_IAP_TP_RTS) &&
         ducar_can_iap_is_df00_control(ptCanPacket) &&
         ducar_can_iap_is_pc_to_bms(ptCanPacket))

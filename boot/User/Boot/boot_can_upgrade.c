@@ -22,7 +22,7 @@
 #define BOOT_CAN_PAGE_MESSAGE_LEN       ((uint16_t)132U)
 #define BOOT_CAN_PAGE_PACKET_COUNT      ((uint8_t)19U)
 #define BOOT_CAN_PACKAGE_HEADER_SIZE    ((uint32_t)128UL)
-#define BOOT_CAN_TIMEOUT_MS             ((uint32_t)500UL)
+#define BOOT_CAN_TIMEOUT_MS             ((uint32_t)10000UL)
 #define BOOT_CAN_FINISH_TIMEOUT_MS      ((uint32_t)1000UL)
 #define BOOT_CAN_VERSION_T              ((uint8_t)0xFDU)
 #define BOOT_CAN_VERSION_V              ((uint8_t)0xFEU)
@@ -48,6 +48,7 @@ static uint16_t s_boot_can_page_length;
 static uint8_t s_boot_can_page_packets;
 static uint8_t s_boot_can_expected_packet;
 static uint8_t s_boot_can_host_address;
+static uint32_t s_boot_can_next_page_to_erase;
 static uint32_t s_boot_can_last_activity;
 static uint8_t s_boot_can_reset_pending;
 static uint32_t s_boot_can_tx_failure_baseline;
@@ -89,6 +90,7 @@ static void boot_can_reset_state(void)
     s_boot_can_page_packets = 0U;
     s_boot_can_expected_packet = 0U;
     s_boot_can_host_address = DUCAR_CAN_PC_ADDRESS;
+    s_boot_can_next_page_to_erase = BOOT_APP2_START_ADDR;
     s_boot_can_last_activity = 0UL;
     s_boot_can_reset_pending = 0U;
     s_boot_can_tx_failure_baseline = 0UL;
@@ -222,24 +224,32 @@ static uint8_t boot_can_is_version_request(const ducar_can_frame_t *frame,
             (frame->data[2] == 0U)) ? 1U : 0U;
 }
 
-/* 首页升级头验证通过后擦除BOOT侧APP2暂存区。 */
-static bool boot_can_erase_app2(void)
+/* 按实际固件写入进度逐页擦除APP2，避免首页一次擦除整个暂存区。 */
+static bool boot_can_erase_app2_pages_through(uint32_t last_page)
 {
-    uint32_t u32FlashAddress;
+    if ((last_page < BOOT_APP2_START_ADDR) ||
+        (last_page >= BOOT_APP2_END_ADDR) ||
+        ((last_page % BOOT_FLASH_PAGE_SIZE) != 0UL) ||
+        (s_boot_can_next_page_to_erase < BOOT_APP2_START_ADDR) ||
+        (s_boot_can_next_page_to_erase > BOOT_APP2_END_ADDR) ||
+        ((s_boot_can_next_page_to_erase % BOOT_FLASH_PAGE_SIZE) != 0UL))
+    {
+        return false;
+    }
 
-    for (u32FlashAddress = BOOT_APP2_START_ADDR; u32FlashAddress < BOOT_APP2_END_ADDR;
-         u32FlashAddress += BOOT_FLASH_PAGE_SIZE)
+    while (s_boot_can_next_page_to_erase <= last_page)
     {
         boot_watchdog_feed();
-        if (!boot_flash_erase_page(u32FlashAddress))
+        if (!boot_flash_erase_page(s_boot_can_next_page_to_erase))
         {
             return false;
         }
+        s_boot_can_next_page_to_erase += BOOT_FLASH_PAGE_SIZE;
     }
     return true;
 }
 
-/* 从首页128字节头中解析固件大小、CRC和型号，并在此之后才允许擦APP2。 */
+/* 从首页128字节头中解析固件大小、CRC和型号；APP2按实际写入范围逐页擦除。 */
 static bool boot_can_parse_header(void)
 {
     ducar_iap_frame_t tIapFrame;
@@ -271,15 +281,10 @@ static bool boot_can_parse_header(void)
         return false;
     }
 
-    /* 首页面头和长度合法后才擦APP2；E1/02阶段绝不擦除。 */
-    if (!boot_can_erase_app2())
-    {
-        return false;
-    }
-
     s_boot_can_fw_info = tFirmwareInfo;
     s_boot_can_firmware_size = tFirmwareInfo.size;
     s_boot_can_package_size = u32PackageSize;
+    s_boot_can_next_page_to_erase = BOOT_APP2_START_ADDR;
     s_boot_can_header_received = 1U;
     return true;
 }
@@ -327,6 +332,8 @@ static bool boot_can_write_page(void)
     uint32_t u32PageOffset;
     uint32_t u32FirmwareBytesRemaining;
     uint32_t u32WriteLength;
+    uint32_t u32WriteEndAddress;
+    uint32_t u32LastFlashPage;
 
     u32PageAddress = ducar_can_read_u32_le(s_boot_can_page_buffer);
     if (s_boot_can_header_received == 0U)
@@ -365,6 +372,13 @@ static bool boot_can_write_page(void)
     u32FirmwareBytesRemaining = s_boot_can_firmware_size - u32PageOffset;
     u32WriteLength = (u32FirmwareBytesRemaining > BOOT_CAN_PAGE_SIZE) ?
                      BOOT_CAN_PAGE_SIZE : u32FirmwareBytesRemaining;
+    u32WriteEndAddress = BOOT_APP2_START_ADDR + u32PageOffset + u32WriteLength - 1UL;
+    u32LastFlashPage = u32WriteEndAddress -
+                       (u32WriteEndAddress % BOOT_FLASH_PAGE_SIZE);
+    if (!boot_can_erase_app2_pages_through(u32LastFlashPage))
+    {
+        return false;
+    }
     if (!boot_flash_write(BOOT_APP2_START_ADDR + u32PageOffset,
                           &s_boot_can_page_buffer[4],
                           u32WriteLength))
@@ -468,7 +482,9 @@ static void boot_can_handle_rts(const ducar_can_frame_t *frame,
         return;
     }
     u16PageMessageLength = ducar_can_read_u16_le(&frame->data[1]);
-    if ((s_boot_can_state != BOOT_CAN_STATE_WAIT_PAGE) ||
+    /* 重复RTS只重启当前未收完的页，不清除已经写入的页计数。 */
+    if (((s_boot_can_state != BOOT_CAN_STATE_WAIT_PAGE) &&
+         (s_boot_can_state != BOOT_CAN_STATE_RECEIVING_PAGE)) ||
         (u16PageMessageLength != BOOT_CAN_PAGE_MESSAGE_LEN) ||
         (frame->data[3] != BOOT_CAN_PAGE_PACKET_COUNT))
     {

@@ -1,6 +1,6 @@
 /*
  * 文件作用：
- *   APP层LOG管理模块，负责故障变化、状态变化和周期快照的记录、读取和导出数据准备。
+ *   APP层LOG管理模块，负责故障变化、看门狗复位和软关机快照的记录、读取和导出数据准备。
  *
  * 主要用途：
  *   1. 生成运行LOG记录，记录故障、告警、复位原因、MOS状态、电压、电流、温度等快照。
@@ -19,13 +19,11 @@
  */
 #include "app_log_manage.h"        /* LOG结构体、触发原因和对外接口声明。 */
 #include "App/app_flash_map.h"     /* APP侧Flash分区唯一地址定义。 */
-#include "app_h_power_manage.h"    /* 读取高压/MOS管理模块的状态快照。 */
 #include "app_bms_fault.h"      /* 读取BMS故障模块的最终故障图。 */
 #include "app_bms_fault_config.h" /* 复用NTC故障数量阈值，避免日志和保护使用不同口径。 */
 #include "app_bms_snapshot.h"      /* 读取统一业务快照，避免LOG重复拼装采样数据。 */
 #include "App/app_param.h"          /* 读取项目级拓扑配置。 */
 #include "Driver/d_timer.h"    /* 读取系统运行时间，用于LOG时间戳。 */
-#include "HSI_afe/hsi_afe.h"       /* 读取AFE采样数据、硬件故障和单体电压。 */
 #include "Middle/m_flash_wl.h"     /* 使用Flash均衡擦写模块保存LOG。 */
 #include "Driver/d_rtc.h"     /* 优先使用RTC真实时间作为LOG时间戳。 */
 #include "Driver/d_system.h"  /* 读取复位来源和当前系统主频。 */
@@ -39,9 +37,9 @@
  * LOG整体流程：
  * 1. main初始化时调用app_log_init()，扫描Flash均衡擦写区域，确认LOG能不能写。
  * 2. BMS故障位发生置位或清除时，app_bms_fault.c调用app_log_request_snapshot()；
- *    上电检测到IWDG复位时，app_log_init()自动入队一条复位快照。
+ *    检测到非纯上电复位时，app_log_init()自动入队一条独立复位记录。
  * 3. app_log_request_snapshot()只生成RAM快照并放入队列，不直接写Flash。
- * 4. SaveLog_Task每10ms调用app_log_task()，实时检查MOS/外部状态变化。
+ * 4. SaveLog_Task每10ms调用app_log_task()，输出NTC诊断变化。
  * 5. app_log_task()每次最多把一条RAM快照写入Flash，避免单次处理积压过多。
  */
 
@@ -79,11 +77,15 @@ static uint8_t s_log_pending_tail;                   /* 队列读取位置，下
 static uint8_t s_log_pending_count;                  /* 队列中当前有效快照数量。 */
 static volatile uint8_t s_log_ready;                 /* LOG模块可写标志，Flash初始化失败时为0。 */
 static uint8_t s_log_overflow_count;                 /* 队列溢出计数，用来标记是否丢过旧快照。 */
-static uint8_t s_log_ex_sig_inited;                  /* 外部信号基准是否已经建立，避免上电就误记一条。 */
-static log_ex_sig_t s_log_last_ex_sig;               /* 上一次10ms周期检查到的外部信号/MOS状态。 */
-static d_system_reset_flags_t s_log_reset_flags;      /* 上电时保存的复位来源，后面写入每条快照。 */
+static uint8_t s_log_ntc_diag_inited;                /* NTC诊断基准是否已建立。 */
+static uint8_t s_log_last_ntc_fault_mask;             /* 上一次输出诊断时的NTC原始故障掩码。 */
+static uint8_t s_log_last_ntc_count;                  /* 上一次输出诊断时的异常数量。 */
+static d_system_reset_flags_t s_log_reset_flags;      /* 启动早期捕获的复位来源，仅写入独立复位记录。 */
+static uint8_t s_log_reset_flags_pending;             /* 尚未成功保存的本次启动复位来源。 */
 static uint8_t s_log_reset_flags_captured;             /* 标记硬件复位标志是否已在main早期读取并清除。 */
 static SemaphoreHandle_t s_log_mutex;                /* 串行化跨任务LOG入队、写入和flush状态读取。 */
+
+static const char *app_log_trigger_name(uint8_t trigger);
 
 /* main初始化阶段单线程调用LOG接口；运行期通过递归互斥锁保护队列。 */
 static bool app_log_lock(TickType_t timeout_ticks)
@@ -144,7 +146,7 @@ static void app_log_fill_uptime(log_rtd_t *log)
     log->sec  = (uint8_t)(u32TotalSeconds % 60U);           /* 保存运行时间中的秒。 */
 }
 
-/* 采集外部信号和MOS状态，主要用于判断状态变化是否需要保存一条LOG。 */
+/* 采集外部信号和MOS状态，仅作为其他事件触发日志时的快照内容。 */
 static log_ex_sig_t app_log_collect_ex_sig(const app_bms_snapshot_t *snapshot)
 {
     log_ex_sig_t ex_sig; /* 临时保存本次采集到的外部信号/MOS状态。 */
@@ -158,19 +160,36 @@ static log_ex_sig_t app_log_collect_ex_sig(const app_bms_snapshot_t *snapshot)
     ex_sig.bit.chg_mos_s = (snapshot->mos.chg_mos_state != 0U) ? 1U : 0U;  /* 充电MOS实际反馈状态。 */
     ex_sig.bit.dsg_mos_s = (snapshot->mos.dsg_mos_state != 0U) ? 1U : 0U;  /* 放电MOS实际反馈状态。 */
     ex_sig.bit.pre_mos_s = (snapshot->mos.pre_mos_state != 0U) ? 1U : 0U; /* 预放MOS实际输出状态。 */
-    /* 当前原理图没有独立DETC/DETD输入，不能把MOS路径状态冒充外部检测信号，保持0。 */
-    ex_sig.bit.detc_stu  = 0U;
-    ex_sig.bit.detd_stu  = 0U;
+    /* 使用统一快照中的已消抖板级输入；1=在位，避免旧版硬编码0导致日志丢失检测状态。 */
+    ex_sig.bit.detc_stu  = (snapshot->signal.input.mcu_detc != 0U) ? 1U : 0U;
+    ex_sig.bit.detd_stu  = (snapshot->signal.input.mcu_detd != 0U) ? 1U : 0U;
 
-    return ex_sig; /* 返回本次采集结果，给快照或变化检测使用。 */
+    return ex_sig; /* 返回本次采集结果，供快照使用。 */
 }
 
-/* 把N32G45X的RCC复位标志转换成LOG结构体中的复位来源位。 */
-static log_reset_s_t app_log_collect_reset_source(void)
+/* 正常POR不单独存LOG；POR同时带PINRST且没有其他原因时也按正常上电处理。 */
+static uint8_t app_log_has_recordable_reset(void)
+{
+    return (uint8_t)((s_log_reset_flags.bor_reset != 0U) ||
+                     (s_log_reset_flags.soft_reset != 0U) ||
+                     (s_log_reset_flags.iwdg_reset != 0U) ||
+                     (s_log_reset_flags.wwdg_reset != 0U) ||
+                     (s_log_reset_flags.lpwr_reset != 0U) ||
+                     ((s_log_reset_flags.pin_reset != 0U) &&
+                      (s_log_reset_flags.por_reset == 0U)));
+}
+
+/* 仅把本次RCC复位标志转换到专用复位记录中。 */
+static log_reset_s_t app_log_collect_reset_source(uint8_t trigger)
 {
     log_reset_s_t reset_s; /* 临时保存转换后的复位来源。 */
 
     reset_s.reset_s = 0U; /* 先清零所有复位来源bit。 */
+    if ((trigger != (uint8_t)LOG_TRIGGER_RESET) || (s_log_reset_flags_pending == 0U))
+    {
+        return reset_s; /* 普通告警/故障快照不携带复位来源。 */
+    }
+
     reset_s.bit.v18pwr_rstf = s_log_reset_flags.bor_reset;  /* BOR欠压复位标志。 */
     reset_s.bit.pin_rst     = s_log_reset_flags.pin_reset;  /* NRST引脚复位标志。 */
     reset_s.bit.por_rst     = s_log_reset_flags.por_reset;  /* 上电/掉电复位标志。 */
@@ -205,15 +224,13 @@ static log_hw_err_t app_log_collect_hw_err(const app_bms_snapshot_t *snapshot)
 }
 
 /* 采集软件告警状态，只保存Warning类状态，不和Protection/Lock故障合并。 */
-static log_sw_warn_t app_log_collect_sw_warn(void)
+static log_sw_warn_t app_log_collect_sw_warn(const app_bms_snapshot_t *snapshot)
 {
     struct _app_bms_fault_t fault_snapshot;
     const t_bms_fault_flag *fault = &fault_snapshot.tbms_fault_flag; /* 使用最终故障图复制，避免读取半更新结构。 */
-    app_bms_snapshot_t snapshot;                                       /* 读取NTC异常数量，区分Warning和Fault。 */
     log_sw_warn_t sw_warn;                                              /* 临时保存转换后的LOG软件告警图。 */
 
     app_bms_fault_snapshot_read(&fault_snapshot);
-    app_bms_snapshot_read(&snapshot);
 
     sw_warn.status = 0UL; /* 先清零所有告警bit，未使用的告警源保持0。 */
 
@@ -221,41 +238,39 @@ static log_sw_warn_t app_log_collect_sw_warn(void)
     sw_warn.bit.dsgoc1 = fault->udischarge_fault_A.tdischarge_fault_A.b1pack_war_ocd; /* 统一放电过流告警。 */
     sw_warn.bit.dsgoc2 = 0U; /* 兼容旧日志结构，当前不再表示独立告警等级。 */
 
-    /* 放电温度和欠压告警：只收集war位。 */
+    /* 放电温度和欠压告警：新记录区分单体欠压与总压欠压。 */
     sw_warn.bit.dsgot = fault->udischarge_fault_A.tdischarge_fault_A.b1pack_war_otd; /* 放电高温告警。 */
     sw_warn.bit.dsgut = fault->udischarge_fault_A.tdischarge_fault_A.b1pack_war_utd; /* 放电低温告警。 */
-    sw_warn.bit.celluv = (fault->udischarge_fault_A.tdischarge_fault_A.b1cell_war_cuv ||
-                          fault->udischarge_fault_B.tdischarge_fault_B.b1pack_war_cuv) ? 1U : 0U; /* 单体或总压欠压告警。 */
+    sw_warn.bit.celluv = fault->udischarge_fault_A.tdischarge_fault_A.b1cell_war_cuv; /* 单体欠压告警。 */
+    sw_warn.bit.packuv = fault->udischarge_fault_B.tdischarge_fault_B.b1pack_war_cuv; /* 总压欠压告警。 */
 
-    /* 充电电流、温度和过压告警：只收集war位。 */
-    sw_warn.bit.chgoc = (fault->ucharge_fault_A.tcharge_fault_A.b1pack_war_occ ||
-                         fault->ucharge_fault_A.tcharge_fault_A.b1pack_war_orcc ||
-                         fault->ucharge_fault_B.tcharge_fault_B.b1pack_war_roc) ? 1U : 0U; /* 充电/回馈过流或反向电流告警。 */
+    /* 充电电流、温度和过压告警：新记录区分普通充电与回馈过流。 */
+    sw_warn.bit.chgoc = fault->ucharge_fault_A.tcharge_fault_A.b1pack_war_occ; /* 普通充电过流告警。 */
+    sw_warn.bit.recharge_oc = fault->ucharge_fault_A.tcharge_fault_A.b1pack_war_orcc; /* 回馈过流告警。 */
     sw_warn.bit.chgot = fault->ucharge_fault_A.tcharge_fault_A.b1pack_war_otc;             /* 充电高温告警。 */
     sw_warn.bit.chgut = fault->ucharge_fault_A.tcharge_fault_A.b1pack_war_utc;             /* 充电低温告警。 */
-    sw_warn.bit.cellov1 = (fault->ucharge_fault_A.tcharge_fault_A.b1cell_war_cov ||
-                           fault->ucharge_fault_B.tcharge_fault_B.b1pack_war_pov) ? 1U : 0U; /* 单体或总压过压告警。 */
+    sw_warn.bit.cellov1 = fault->ucharge_fault_A.tcharge_fault_A.b1cell_war_cov; /* 单体过压告警。 */
+    sw_warn.bit.packov = fault->ucharge_fault_B.tcharge_fault_B.b1pack_war_pov; /* 总压过压告警。 */
 
     /* 通用告警：只收集waring位。 */
     sw_warn.bit.unbalance = fault->ugeneral_fault_A.tgeneral_fault_A.b1cell_voltage_diff_waring; /* 单体压差告警。 */
     sw_warn.bit.mos_ot = fault->ugeneral_fault_A.tgeneral_fault_A.b1MOS_OTP_waring;              /* MOS过温告警。 */
-    sw_warn.bit.ntc_warn = ((snapshot.ntc_abnormal_count >= 1U) &&
-                            (snapshot.ntc_abnormal_count <= (BMS_NTC_FAULT_MIN_COUNT - 1U))) ? 1U : 0U; /* 至少1路异常且未达到故障数量阈值时只告警。 */
+    sw_warn.bit.ntc_warn = ((snapshot != NULL) &&
+                            (snapshot->ntc_abnormal_count >= 1U) &&
+                            (snapshot->ntc_abnormal_count <= (BMS_NTC_FAULT_MIN_COUNT - 1U))) ? 1U : 0U; /* 至少1路异常且未达到故障数量阈值时只告警。 */
 
     return sw_warn; /* 返回本次采集到的软件告警图。 */
 }
 
 /* 采集软件故障状态，只保存pro/fault/lock/fuse类状态，不和告警合并。 */
-static log_sw_err_t app_log_collect_sw_err(void)
+static log_sw_err_t app_log_collect_sw_err(const app_bms_snapshot_t *snapshot)
 {
     struct _app_bms_fault_t fault_snapshot;
     const t_bms_fault_flag *fault = &fault_snapshot.tbms_fault_flag; /* 使用最终故障图复制。 */
     const t_bms_fault_stat *fault_stat = &fault_snapshot.tbms_fault_stat; /* 使用同一时刻的汇总保护状态。 */
-    app_bms_snapshot_t snapshot;                                        /* 读取统一快照中的NTC异常数量。 */
     log_sw_err_t sw_err;                                                /* 临时保存转换后的LOG软件故障图。 */
 
     app_bms_fault_snapshot_read(&fault_snapshot);
-    app_bms_snapshot_read(&snapshot);
 
     sw_err.status = 0UL; /* 先清零所有软件故障bit。 */
 
@@ -279,7 +294,6 @@ static log_sw_err_t app_log_collect_sw_err(void)
     sw_err.bit.chgoc = (fault->ucharge_fault_A.tcharge_fault_A.b1pack_pro_occ1 ||
                         fault->ucharge_fault_A.tcharge_fault_A.b1pack_pro_occ2 ||
                         fault->ucharge_fault_A.tcharge_fault_A.b1pack_pro_orcc ||
-                        fault->ucharge_fault_B.tcharge_fault_B.b1pack_pro_roc ||
                         fault->ucharge_fault_B.tcharge_fault_B.b1pack_occ_lock) ? 1U : 0U; /* 充电过流保护、反向电流保护或过流锁定。 */
     sw_err.bit.chgot = fault->ucharge_fault_A.tcharge_fault_A.b1pack_pro_otc; /* 充电高温保护。 */
     sw_err.bit.chgut = fault->ucharge_fault_A.tcharge_fault_A.b1pack_pro_utc; /* 充电低温保护。 */
@@ -301,7 +315,8 @@ static log_sw_err_t app_log_collect_sw_err(void)
                             fault->ugeneral_fault_A.tgeneral_fault_A.b1MOS_OTP_FUSE ||
                             fault->ugeneral_fault_A.tgeneral_fault_A.b1OTD_FUSE) ? 1U : 0U; /* 熔断相关触发条件。 */
     sw_err.bit.afe_err_f = fault->ugeneral_fault_A.tgeneral_fault_A.b1AFE_fault; /* 只记录AFE通信/状态故障，NTC故障单独记录到ntc_fault。 */
-    sw_err.bit.ntc_fault = (snapshot.ntc_abnormal_count >= BMS_NTC_FAULT_MIN_COUNT) ? 1U : 0U; /* 达到配置数量阈值时记录NTC故障。 */
+    sw_err.bit.ntc_fault = ((snapshot != NULL) &&
+                            (snapshot->ntc_abnormal_count >= BMS_NTC_FAULT_MIN_COUNT)) ? 1U : 0U; /* 达到配置数量阈值时记录NTC故障。 */
 
     return sw_err; /* 返回转换后的软件故障图。 */
 }
@@ -414,17 +429,41 @@ static void app_log_build_snapshot(log_rtd_t *log, log_trigger_t trigger)
     log->chg_port_vol = (uint16_t)(tBmsSnapshot.bat_mv / 100UL); /* 当前无独立端口采样，沿用单体电压累加总压，单位0.1V。 */
     log->dsg_port_vol = (uint16_t)(tBmsSnapshot.bat_mv / 100UL); /* 当前无独立端口采样，沿用单体电压累加总压，单位0.1V。 */
     log->hw_err = app_log_collect_hw_err(&tBmsSnapshot);  /* 填入AFE硬件故障快照。 */
-    log->sw_warn = app_log_collect_sw_warn();         /* 填入BMS软件告警快照，Warning类状态单独保存。 */
-    log->sw_err = app_log_collect_sw_err();           /* 填入BMS软件故障快照，pro/fault/lock类状态单独保存。 */
+    log->sw_warn = app_log_collect_sw_warn(&tBmsSnapshot); /* 用同一份快照生成软件告警。 */
+    log->sw_err = app_log_collect_sw_err(&tBmsSnapshot);   /* 用同一份快照生成软件故障。 */
+    if (trigger == LOG_TRIGGER_RESET)
+    {
+        /* 复位来源单独成条；本行不混入同一启动阶段的告警/故障状态。 */
+        log->hw_err.status = 0U;
+        log->sw_warn.status = 0UL;
+        log->sw_err.status = 0UL;
+    }
+    log->reserved_store[0] = LOG_WARN_MAP_VERSION_V1; /* 供读日志协议区分新旧告警位语义，保持旧记录可解码。 */
+    if (tBmsSnapshot.ntc_abnormal_count != 0U)
+    {
+        SEGGER_RTT_printf(0,
+                          "LOG_NTC_CAPTURE reason=%s(%u) count=%u fault[AFE=1,CELL1=2,CELL2=4,MOS=8,PTC=16]=0x%02X valid=0x%02X short=0x%02X open=0x%02X raw[cell1=%u cell2=%u mos=%u ptc=%u]\r\n",
+                          app_log_trigger_name((uint8_t)trigger),
+                          (unsigned int)trigger,
+                          (unsigned int)tBmsSnapshot.ntc_abnormal_count,
+                          (unsigned int)tBmsSnapshot.ntc.fault_mask,
+                          (unsigned int)tBmsSnapshot.ntc.valid_mask,
+                          (unsigned int)tBmsSnapshot.ntc.short_mask,
+                          (unsigned int)tBmsSnapshot.ntc.open_mask,
+                          (unsigned int)tBmsSnapshot.ntc.cell_ntc1_raw,
+                          (unsigned int)tBmsSnapshot.ntc.cell_ntc2_raw,
+                          (unsigned int)tBmsSnapshot.ntc.mos_raw,
+                          (unsigned int)tBmsSnapshot.ntc.ptc_raw);
+    }
     if (trigger == LOG_TRIGGER_SOFT_SHUTDOWN)
     {
         log->sw_err.bit.power_off_f = 1U; /* 仅在关机快照中置位，不修改BMS故障状态。 */
     }
     log->ex_sig = app_log_collect_ex_sig(&tBmsSnapshot);  /* 填入MOS和外部状态快照。 */
-    log->reset_s = app_log_collect_reset_source();    /* 填入本次上电的复位来源。 */
+    /* 复位来源只在独立复位记录实际提交时填入。 */
     log->sys_clk = (uint8_t)(d_system_get_core_clock_hz() / 1000000UL); /* 保存当前主频，单位MHz。 */
 
-    log->deg_data[0] = (uint8_t)trigger;        /* deg_data[0]保存触发原因：故障、状态变化或IWDG复位。 */
+    log->deg_data[0] = (uint8_t)trigger;        /* deg_data[0]保存故障、关机或独立复位记录的触发原因。 */
     log->deg_data[1] = s_log_overflow_count;    /* deg_data[1]保存队列溢出次数，用于判断是否丢过LOG。 */
     log->checksum = app_log_calc_checksum(log); /* 最后计算业务层校验值，填入checksum字段。 */
 }
@@ -434,7 +473,25 @@ static void app_log_push_pending(const log_rtd_t *log)
 {
     if (s_log_pending_count >= APP_LOG_PENDING_NUM) /* 如果RAM队列已经满了。 */
     {
-        s_log_pending_tail = (uint8_t)((s_log_pending_tail + 1U) % APP_LOG_PENDING_NUM); /* 丢弃最旧一条，tail指向下一条。 */
+        if ((APP_LOG_PENDING_NUM > 1U) &&
+            (s_log_pending[s_log_pending_tail].deg_data[0] == (uint8_t)LOG_TRIGGER_RESET))
+        {
+            uint8_t u8DropIndex = (uint8_t)((s_log_pending_tail + 1U) % APP_LOG_PENDING_NUM);
+            uint8_t u8LastIndex = (uint8_t)((s_log_pending_head + APP_LOG_PENDING_NUM - 1U) % APP_LOG_PENDING_NUM);
+
+            /* 队列满时保护最旧的独立复位记录，丢弃其后的最旧普通快照。 */
+            while (u8DropIndex != u8LastIndex)
+            {
+                uint8_t u8NextIndex = (uint8_t)((u8DropIndex + 1U) % APP_LOG_PENDING_NUM);
+                s_log_pending[u8DropIndex] = s_log_pending[u8NextIndex];
+                u8DropIndex = u8NextIndex;
+            }
+            s_log_pending_head = u8LastIndex; /* 腾出的槽位作为新的head。 */
+        }
+        else
+        {
+            s_log_pending_tail = (uint8_t)((s_log_pending_tail + 1U) % APP_LOG_PENDING_NUM); /* 丢弃最旧一条普通快照。 */
+        }
         s_log_pending_count--;       /* 因为丢了一条，所以队列数量先减1。 */
         s_log_overflow_count++;      /* 记录一次溢出，后续LOG中可以看到曾经丢过旧记录。 */
     }
@@ -442,6 +499,129 @@ static void app_log_push_pending(const log_rtd_t *log)
     s_log_pending[s_log_pending_head] = *log; /* 把新快照复制到head位置。 */
     s_log_pending_head = (uint8_t)((s_log_pending_head + 1U) % APP_LOG_PENDING_NUM); /* head后移，形成环形队列。 */
     s_log_pending_count++; /* 队列有效数量加1。 */
+}
+
+/* 返回触发原因名称，方便通过RTT直接判断为什么保存这条快照。 */
+static const char *app_log_trigger_name(uint8_t trigger)
+{
+    switch ((log_trigger_t)trigger)
+    {
+        case LOG_TRIGGER_FAULT_SET:
+            return "fault-set";
+        case LOG_TRIGGER_FAULT_CLEAR:
+            return "fault-clear";
+        case LOG_TRIGGER_FAULT_BOTH:
+            return "fault-set-and-clear";
+        case LOG_TRIGGER_SIGNAL_CHANGE:
+            return "signal-change";
+        case LOG_TRIGGER_RESET:
+            return "reset";
+        case LOG_TRIGGER_SOFT_SHUTDOWN:
+            return "soft-shutdown";
+        default:
+            return "unknown";
+    }
+}
+
+/* 一条快照成功写入Flash后，输出可读摘要和完整业务数据字节。 */
+static void app_log_print_saved_record(const log_rtd_t *log)
+{
+    static const char s_hex_digits[] = "0123456789ABCDEF";
+    const uint8_t *pu8LogBytes = (const uint8_t *)log;
+    uint16_t u16ByteOffset;
+    uint32_t u32CommitTickMs;
+
+    if (log == NULL)
+    {
+        return;
+    }
+
+    u32CommitTickMs = d_timer_get_ms();
+
+    if ((log->year == 0U) && (log->month == 0U) && (log->day == 0U))
+    {
+        SEGGER_RTT_printf(0,
+                          "LOG_SAVED reason=%s(%u) event_time=uptime+%02u:%02u:%02u commit_tick=%lums\r\n",
+                          app_log_trigger_name(log->deg_data[0]),
+                          (unsigned int)log->deg_data[0],
+                          (unsigned int)log->hour,
+                          (unsigned int)log->min,
+                          (unsigned int)log->sec,
+                          (unsigned long)u32CommitTickMs);
+    }
+    else
+    {
+        SEGGER_RTT_printf(0,
+                          "LOG_SAVED reason=%s(%u) event_time=20%02u-%02u-%02u %02u:%02u:%02u commit_tick=%lums\r\n",
+                          app_log_trigger_name(log->deg_data[0]),
+                          (unsigned int)log->deg_data[0],
+                          (unsigned int)log->year,
+                          (unsigned int)log->month,
+                          (unsigned int)log->day,
+                          (unsigned int)log->hour,
+                          (unsigned int)log->min,
+                          (unsigned int)log->sec,
+                          (unsigned long)u32CommitTickMs);
+    }
+
+    SEGGER_RTT_printf(0,
+                      "LOG_DATA soc=%u cell_min=%umV(#%u) cell_max=%umV(#%u) pack=%u*0.1V current=%d*10mA temp_cell_max=%dC temp_cell_min=%dC temp_mos=%d*0.1C\r\n",
+                      (unsigned int)log->soc,
+                      (unsigned int)log->minvol,
+                      (unsigned int)log->min_cell_num,
+                      (unsigned int)log->maxvol,
+                      (unsigned int)log->max_cell_num,
+                      (unsigned int)log->packvol,
+                      (int)log->cur,
+                      (int)log->max_cell_temp,
+                      (int)log->min_cell_temp,
+                      (int)log->mos_temp);
+    SEGGER_RTT_printf(0,
+                      "LOG_FLAGS hw=0x%04X warn=0x%08lX fault=0x%08lX signals=0x%08lX(detd=%u detc=%u) reset=0x%04X soc=0x%04X ports(chg=%u dsg=%u)*0.1V clk=%uMHz overflow=%u checksum=0x%02X\r\n",
+                      (unsigned int)log->hw_err.status,
+                      (unsigned long)log->sw_warn.status,
+                      (unsigned long)log->sw_err.status,
+                      (unsigned long)log->ex_sig.ex_sig,
+                      (unsigned int)log->ex_sig.bit.detd_stu,
+                      (unsigned int)log->ex_sig.bit.detc_stu,
+                      (unsigned int)log->reset_s.reset_s,
+                      (unsigned int)log->soc_s.soc_s,
+                      (unsigned int)log->chg_port_vol,
+                      (unsigned int)log->dsg_port_vol,
+                      (unsigned int)log->sys_clk,
+                      (unsigned int)log->deg_data[1],
+                      (unsigned int)log->checksum);
+
+    for (u16ByteOffset = 0U; u16ByteOffset < (uint16_t)sizeof(*log); u16ByteOffset += 16U)
+    {
+        char sHexLine[16U * 3U];
+        uint16_t u16BytesInLine = (uint16_t)(sizeof(*log) - u16ByteOffset);
+        uint16_t u16ByteIndex;
+        uint16_t u16LineLength = 0U;
+
+        if (u16BytesInLine > 16U)
+        {
+            u16BytesInLine = 16U;
+        }
+
+        for (u16ByteIndex = 0U; u16ByteIndex < u16BytesInLine; u16ByteIndex++)
+        {
+            uint8_t u8Value = pu8LogBytes[u16ByteOffset + u16ByteIndex];
+            sHexLine[u16LineLength++] = s_hex_digits[u8Value >> 4U];
+            sHexLine[u16LineLength++] = s_hex_digits[u8Value & 0x0FU];
+            if ((u16ByteIndex + 1U) < u16BytesInLine)
+            {
+                sHexLine[u16LineLength++] = ' ';
+            }
+        }
+        sHexLine[u16LineLength] = '\0';
+
+        SEGGER_RTT_printf(0,
+                          "LOG_RAW[%u..%u]=%s\r\n",
+                          (unsigned int)u16ByteOffset,
+                          (unsigned int)(u16ByteOffset + u16BytesInLine - 1U),
+                          sHexLine);
+    }
 }
 
 /* 每次只写一条快照到Flash，控制写Flash对主循环时基的影响。 */
@@ -454,41 +634,65 @@ static void app_log_write_one_pending(void)
         return; /* 直接退出，避免无意义操作。 */
     }
 
+    s_log_pending[s_log_pending_tail].reset_s =
+        app_log_collect_reset_source(s_log_pending[s_log_pending_tail].deg_data[0]);
+    s_log_pending[s_log_pending_tail].checksum =
+        app_log_calc_checksum(&s_log_pending[s_log_pending_tail]);
+
     eFlashAppendStatus = m_flash_wl_append(&s_log_rtd_area,                         /* 指定写入实时故障快照均衡擦写区。 */
                                (const uint8_t *)&s_log_pending[s_log_pending_tail], /* 取队列中最旧的一条快照。 */
                                (uint16_t)sizeof(log_rtd_t));            /* 写入快照结构体的实际长度。 */
     if (eFlashAppendStatus == M_FLASH_WL_OK) /* 如果Flash写入成功。 */
     {
+        if (s_log_pending[s_log_pending_tail].deg_data[0] == (uint8_t)LOG_TRIGGER_RESET)
+        {
+            s_log_reset_flags_pending = 0U; /* 只有独立复位记录成功提交才消费复位来源。 */
+        }
+        app_log_print_saved_record(&s_log_pending[s_log_pending_tail]); /* 只在记录确实提交到Flash后输出原因和内容。 */
         s_log_pending_tail = (uint8_t)((s_log_pending_tail + 1U) % APP_LOG_PENDING_NUM); /* tail后移，表示这条已消费。 */
         s_log_pending_count--; /* 队列有效数量减1。 */
     }
     else /* 如果Flash写入失败。 */
     {
+        SEGGER_RTT_printf(0,
+                          "LOG_WRITE_FAILED reason=%s(%u) status=%u\r\n",
+                          app_log_trigger_name(s_log_pending[s_log_pending_tail].deg_data[0]),
+                          (unsigned int)s_log_pending[s_log_pending_tail].deg_data[0],
+                          (unsigned int)eFlashAppendStatus);
         s_log_ready = 0U; /* 关闭LOG写入，避免每秒反复尝试失败并占用任务时间。 */
     }
 }
 
-/* 10ms检查一次MOS/充放电状态变化；首次调用只建立基准，不保存LOG。 */
-static void app_log_check_ex_sig_change(void)
+/* NTC原始故障掩码变化时输出通道和ADC值，区分传感器故障与单次采样毛刺。 */
+static void app_log_check_ntc_diagnostics(void)
 {
     app_bms_snapshot_t tBmsSnapshot;
-    log_ex_sig_t tExternalSignal;
+    uint8_t bChanged;
 
     app_bms_snapshot_read(&tBmsSnapshot);
-    tExternalSignal = app_log_collect_ex_sig(&tBmsSnapshot); /* 采集当前MOS和外部状态。 */
-
-    if (s_log_ex_sig_inited == 0U) /* 如果还没有建立上一次状态基准。 */
+    bChanged = (uint8_t)((s_log_ntc_diag_inited == 0U) ||
+                         (tBmsSnapshot.ntc.fault_mask != s_log_last_ntc_fault_mask) ||
+                         (tBmsSnapshot.ntc_abnormal_count != s_log_last_ntc_count));
+    if (bChanged == 0U)
     {
-        s_log_last_ex_sig = tExternalSignal; /* 把当前状态作为第一次基准。 */
-        s_log_ex_sig_inited = 1U;   /* 标记基准已经建立。 */
-        return;                     /* 首次只建立基准，不保存LOG，避免上电误记录。 */
+        return;
     }
 
-    if (tExternalSignal.ex_sig != s_log_last_ex_sig.ex_sig) /* 如果当前状态和上一次状态不同。 */
-    {
-        app_log_request_snapshot(LOG_TRIGGER_SIGNAL_CHANGE); /* 请求保存一条“状态变化”快照。 */
-        s_log_last_ex_sig = tExternalSignal;                          /* 更新基准，下一秒继续比较。 */
-    }
+    s_log_ntc_diag_inited = 1U;
+    s_log_last_ntc_fault_mask = tBmsSnapshot.ntc.fault_mask;
+    s_log_last_ntc_count = tBmsSnapshot.ntc_abnormal_count;
+
+    SEGGER_RTT_printf(0,
+                      "NTC_SAMPLE count=%u raw_fault[AFE=1,CELL1=2,CELL2=4,MOS=8,PTC=16]=0x%02X valid=0x%02X short=0x%02X open=0x%02X adc[cell1=%u cell2=%u mos=%u ptc=%u]\r\n",
+                      (unsigned int)tBmsSnapshot.ntc_abnormal_count,
+                      (unsigned int)tBmsSnapshot.ntc.fault_mask,
+                      (unsigned int)tBmsSnapshot.ntc.valid_mask,
+                      (unsigned int)tBmsSnapshot.ntc.short_mask,
+                      (unsigned int)tBmsSnapshot.ntc.open_mask,
+                      (unsigned int)tBmsSnapshot.ntc.cell_ntc1_raw,
+                      (unsigned int)tBmsSnapshot.ntc.cell_ntc2_raw,
+                      (unsigned int)tBmsSnapshot.ntc.mos_raw,
+                      (unsigned int)tBmsSnapshot.ntc.ptc_raw);
 }
 
 /* 在启动最早阶段捕获复位标志，输出原始寄存器和逐项解码，便于定位复位来源。 */
@@ -496,6 +700,7 @@ void app_log_capture_reset_flags(void)
 {
     d_system_get_reset_flags(&s_log_reset_flags);
     s_log_reset_flags_captured = 1U;
+    s_log_reset_flags_pending = app_log_has_recordable_reset();
 
     SEGGER_RTT_printf(0,
                       "RESET raw=0x%08lX BOR=%u PIN=%u POR=%u SW=%u IWDG=%u WWDG=%u LPWR=%u\r\n",
@@ -527,20 +732,31 @@ void app_log_init(void)
     s_log_pending_tail = 0U;          /* RAM队列读取位置从0开始。 */
     s_log_pending_count = 0U;         /* 初始化时队列为空。 */
     s_log_overflow_count = 0U;        /* 初始化时还没有发生队列溢出。 */
-    s_log_ex_sig_inited = 0U;         /* 外部信号基准还没建立，等10ms任务第一次建立。 */
+    s_log_ntc_diag_inited = 0U;
+    s_log_last_ntc_fault_mask = 0U;
+    s_log_last_ntc_count = 0U;
 
     eFlashInitStatus = m_flash_wl_init(&s_log_rtd_area, &s_log_rtd_cfg); /* 扫描Flash LOG区，恢复写指针和最新记录位置。 */
     s_log_ready = ((eFlashInitStatus == M_FLASH_WL_OK) && (s_log_mutex != NULL)) ?
                   1U : 0U; /* Flash和队列互斥资源都可用才允许后续入队和写Flash。 */
 
-    /* 看门狗复位必须主动生成一条启动快照，不能等后续故障或状态变化才碰巧记录。 */
-    if ((s_log_ready != 0U) && (s_log_reset_flags.iwdg_reset != 0U))
+    SEGGER_RTT_printf(0,
+                      "LOG Flash region: [0x%08lX, 0x%08lX), size=%lu bytes, pages=%u, init=%s\r\n",
+                      (unsigned long)APP_FLASH_MAP_LOG_RTD_START_ADDR,
+                      (unsigned long)(APP_FLASH_MAP_LOG_RTD_START_ADDR +
+                                      ((uint32_t)APP_LOG_RTD_PAGE_COUNT * APP_FLASH_MAP_FLASH_PAGE_SIZE)),
+                      (unsigned long)((uint32_t)APP_LOG_RTD_PAGE_COUNT * APP_FLASH_MAP_FLASH_PAGE_SIZE),
+                      (unsigned int)APP_LOG_RTD_PAGE_COUNT,
+                      (s_log_ready != 0U) ? "ready" : "unavailable");
+
+    /* 非纯上电复位必须生成独立记录，不能附着在后续故障快照上。 */
+    if ((s_log_ready != 0U) && (s_log_reset_flags_pending != 0U))
     {
         app_log_request_snapshot(LOG_TRIGGER_RESET);
     }
 }
 
-/* 10ms任务入口：先检查状态变化，再最多写一条等待中的快照。 */
+/* 10ms任务入口：输出采样诊断，再最多写一条等待中的快照。 */
 void app_log_task(void)
 {
     if (!app_log_lock(portMAX_DELAY))
@@ -554,7 +770,7 @@ void app_log_task(void)
         return; /* 直接退出，不做状态检查和写Flash。 */
     }
 
-    app_log_check_ex_sig_change(); /* 每10ms检查一次MOS/外部状态是否变化，变化就请求一条快照。 */
+    app_log_check_ntc_diagnostics(); /* 输出NTC原始故障掩码变化，便于辨认异常通道。 */
     app_log_write_one_pending();   /* 每10ms最多写一条RAM队列中的快照到Flash。 */
     app_log_unlock();
 }
@@ -563,6 +779,12 @@ void app_log_task(void)
 bool app_log_request_snapshot(log_trigger_t trigger)
 {
     log_rtd_t log; /* 临时快照变量，先在栈上组装完整LOG。 */
+
+    /* 保留旧原因编号用于历史日志解码，但不再接受MOS/外部信号变化请求。 */
+    if (trigger == LOG_TRIGGER_SIGNAL_CHANGE)
+    {
+        return false;
+    }
 
     if (!app_log_lock(pdMS_TO_TICKS(100U)))
     {

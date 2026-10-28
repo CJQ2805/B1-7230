@@ -392,14 +392,40 @@ static uint16_t ducar_can_cell_voltage_mv(const app_bms_snapshot_t *ptBmsSnapsho
     return ptBmsSnapshot->cell_mv[u8CellIndex];
 }
 
+static uint8_t ducar_can_cell_temperature_fault_bit(uint8_t u8TemperatureIndex)
+{
+    /* 快照温度索引0/1/2分别对应AFE_NTC、CELL_NTC1、CELL_NTC2。 */
+    switch (u8TemperatureIndex)
+    {
+        case 0U:
+            return APP_BMS_NTC_FAULT_AFE;
+        case 1U:
+            return APP_BMS_NTC_FAULT_CELL1;
+        case 2U:
+            return APP_BMS_NTC_FAULT_CELL2;
+        default:
+            return 0U;
+    }
+}
+
 static int16_t ducar_can_cell_temperature_0p1c(const app_bms_snapshot_t *ptBmsSnapshot,
                                                 uint8_t u8TemperatureIndex)
 {
+    uint8_t u8NtcFaultBit;
+
     /* 温度通道必须在快照有效位图中，否则返回协议无效温度。 */
     /* 先判断快照是否存在。 */
     if ((ptBmsSnapshot == 0) ||
         /* 温度索引必须落在编译期支持的通道范围内。 */
-        (u8TemperatureIndex >= APP_BMS_MAX_TEMP_NUM) ||
+        (u8TemperatureIndex >= APP_BMS_MAX_TEMP_NUM))
+    {
+        return DUCAR_CAN_INVALID_S16;
+    }
+
+    u8NtcFaultBit = ducar_can_cell_temperature_fault_bit(u8TemperatureIndex);
+    /* 显式NTC故障优先于采样有效位，故障通道统一按-40℃对外发送。 */
+    if (((u8NtcFaultBit != 0U) &&
+         ((ptBmsSnapshot->ntc.fault_mask & u8NtcFaultBit) != 0U)) ||
         /* valid_mask对应位为0时，不能把未采样值当成真实温度。 */
         ((ptBmsSnapshot->temp_valid_mask & (uint8_t)(1U << u8TemperatureIndex)) == 0U))
     {
@@ -664,6 +690,10 @@ static void ducar_can_send_f216(void)
     uint8_t au8CanData[DUCAR_CAN_DATA_DLC] = {0};
     int16_t s16MaxCellTemperature0p1C;
     int16_t s16MinCellTemperature0p1C;
+    int16_t s16Temperature0p1C;
+    uint8_t u8TemperatureIndex;
+    uint8_t u8NtcFaultBit;
+    uint8_t u8ValidTemperatureCount = 0U;
 
     /* 读取MOS温度、电芯极值温度和当前串数。 */
     app_bms_snapshot_read(&tBmsSnapshot);
@@ -676,12 +706,45 @@ static void ducar_can_send_f216(void)
     au8CanData[1] =
         ((tBmsSnapshot.ntc.valid_mask & APP_BMS_NTC_VALID_PTC) != 0U) ?
         ducar_can_temperature_s8(tBmsSnapshot.ntc.ptc_temp_0p1c) : DUCAR_CAN_INVALID_S8;
-    /* 根据快照记录的最高温度通道号读取最高温度。 */
-    s16MaxCellTemperature0p1C =
-        ducar_can_cell_temperature_0p1c(&tBmsSnapshot, tBmsSnapshot.max_temp_num);
-    /* 根据快照记录的最低温度通道号读取最低温度。 */
-    s16MinCellTemperature0p1C =
-        ducar_can_cell_temperature_0p1c(&tBmsSnapshot, tBmsSnapshot.min_temp_num);
+
+    /* 最高/最低温以及有效路数只统计有效且未报故障的AFE_NTC、NTC1和NTC2。 */
+    s16MaxCellTemperature0p1C = DUCAR_CAN_INVALID_S16;
+    s16MinCellTemperature0p1C = DUCAR_CAN_INVALID_S16;
+    for (u8TemperatureIndex = 0U;
+         u8TemperatureIndex < APP_BMS_MAX_TEMP_NUM;
+         u8TemperatureIndex++)
+    {
+        if ((tBmsSnapshot.temp_valid_mask & (uint8_t)(1U << u8TemperatureIndex)) == 0U)
+        {
+            continue;
+        }
+
+        u8NtcFaultBit = ducar_can_cell_temperature_fault_bit(u8TemperatureIndex);
+        if ((u8NtcFaultBit != 0U) &&
+            ((tBmsSnapshot.ntc.fault_mask & u8NtcFaultBit) != 0U))
+        {
+            continue;
+        }
+
+        s16Temperature0p1C = tBmsSnapshot.temp_0p1c[u8TemperatureIndex];
+        if (u8ValidTemperatureCount == 0U)
+        {
+            s16MaxCellTemperature0p1C = s16Temperature0p1C;
+            s16MinCellTemperature0p1C = s16Temperature0p1C;
+        }
+        else
+        {
+            if (s16Temperature0p1C > s16MaxCellTemperature0p1C)
+            {
+                s16MaxCellTemperature0p1C = s16Temperature0p1C;
+            }
+            if (s16Temperature0p1C < s16MinCellTemperature0p1C)
+            {
+                s16MinCellTemperature0p1C = s16Temperature0p1C;
+            }
+        }
+        u8ValidTemperatureCount++;
+    }
 
     /* Data0主MOS温度，Data1预放MOS温度，均为S8整数℃。 */
     /* Data2~Data3写最高电芯温度，单位0.1℃。 */
@@ -690,8 +753,8 @@ static void ducar_can_send_f216(void)
     ducar_can_write_s16_le(au8CanData, 4U, s16MinCellTemperature0p1C);
     /* Data6写当前有效串数。 */
     au8CanData[6] = tBmsSnapshot.cell_count;
-    /* Data7发送当前有效的AFE_NTC、CELL_NTC1、CELL_NTC2采样数量。 */
-    au8CanData[7] = tBmsSnapshot.temp_count;
+    /* Data7发送软件配置的电芯温度探头数量；故障或无效状态不改变配置数量。 */
+    au8CanData[7] = (uint8_t)APP_BMS_MAX_TEMP_NUM;
 
     /* 发送F216。 */
     (void)d_can_send(&can0, ducar_can_build_bms_data_id(DUCAR_CAN_PGN_F216),
@@ -1789,6 +1852,42 @@ static void ducar_can_receive_request(const t_can_packet *ptCanPacket,
             u8ResponseLength = (uint8_t)(uParameterLength + 1U);
             break;
 
+        case DUCAR_CAN_PGN_F230:
+            /* F230按A1.1支持读写；读取方向返回当前SN的ASCII原文，不附加长度字节。 */
+            pszParameter = app_param_get_manufacture_sn();
+            uParameterLength = (pszParameter != 0) ? strlen(pszParameter) : 0U;
+            if (uParameterLength > APP_BMS_MANUFACTURE_SN_MAX_LEN)
+            {
+                (void)ducar_can_queue_ack(DUCAR_CAN_NAK,
+                                          ptCanIdFields->u8Sa,
+                                          u16RequestedPgn,
+                                          DUCAR_CAN_ACTION_NONE);
+                return;
+            }
+
+            if (uParameterLength == 0U)
+            {
+                /* 清除SN后以DLC=0的F230响应表示当前字符串为空。 */
+                if (!d_can_send(&can0,
+                                ducar_can_id_encode((uint8_t)(u16RequestedPgn >> 8U),
+                                                    (uint8_t)u16RequestedPgn,
+                                                    DUCAR_CAN_BMS_A_ADDRESS),
+                                D_CAN_ID_EXTENDED,
+                                au8ResponseData,
+                                0U))
+                {
+                    (void)ducar_can_queue_ack(DUCAR_CAN_NAK,
+                                              ptCanIdFields->u8Sa,
+                                              u16RequestedPgn,
+                                              DUCAR_CAN_ACTION_NONE);
+                }
+                return;
+            }
+
+            memcpy(au8ResponseData, pszParameter, uParameterLength);
+            u8ResponseLength = (uint8_t)uParameterLength;
+            break;
+
         case DUCAR_CAN_PGN_F205:
             /* F205制造商名称来自项目宏，字符串按实际ASCII长度返回。 */
             pszParameter = APP_PARAM_MANUFACTURER_NAME;
@@ -2020,8 +2119,22 @@ static void ducar_can_receive_tp_cm(const t_can_packet *ptCanPacket,
         u16CanTpWaitTicks = 0U;
         if ((u16CanTpPgn == DUCAR_CAN_PGN_F232) && (u16CanLogNext != 0U))
         {
-            u16CanLogNext++;
-            ducar_can_log_next();
+            if (u16CanLogNext < u16CanLogRequested)
+            {
+                /* 当前记录确认完成后，继续发送下一条请求的LOG。 */
+                u16CanLogNext++;
+                ducar_can_log_next();
+            }
+            else
+            {
+                /* 最后一条LOG收到EOM ACK后，按协议回E8成功确认F232读取完成。 */
+                u16CanLogNext = 0U;
+                u16CanLogRequested = 0U;
+                (void)ducar_can_queue_ack(DUCAR_CAN_ACK,
+                                          ptCanIdFields->u8Sa,
+                                          DUCAR_CAN_PGN_F232,
+                                          DUCAR_CAN_ACTION_NONE);
+            }
         }
         return;
     }

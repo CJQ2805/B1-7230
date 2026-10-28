@@ -77,24 +77,24 @@ VECT_TAB_OFFSET=0x00010000
 
 ## ZCANPRO UDS 升级
 
-升级专用的 ZCANPRO 配置和脚本集中在 `tool\uds_upgrade`。运行以下脚本会依次编译 BOOT 和 APP、生成 DUCAR APP BIN、从 128 字节头包后提取裸 APP1 S19，并同步更新 `tool\boot.hex`：
+升级专用的 ZCANPRO 配置和脚本集中在 `tool\uds_upgrade`。运行以下脚本会依次编译 BOOT 和 APP，并同步更新 `tool\boot.hex`。APP 后处理运行 `tool.exe -p n32` 时会在生成 DUCAR APP BIN 和生产烧录 HEX 的同时，自动生成 CANZPRO 所需的裸 APP1 S19：
 
 ```text
 tool\uds_upgrade\build_uds_upgrade_package.bat
 ```
 
-脚本默认使用 `E:\Keil_v5\UV4\uVision.com` 和当前用户的 Codex Python 运行时；也可以在运行前设置 `UVISION`、`PYTHON` 指向本机安装路径。完成后导入：
+脚本默认使用 `E:\Keil_v5\UV4\uVision.com`；也可以在运行前设置 `UVISION` 指向本机安装路径。完成后导入：
 
 ```text
 tool\uds_upgrade\ZS_ECU_Flash_20250401.zflash
 ```
 
-该 ZCANPRO 流程引用 `tool\uds_upgrade` 中的 `SeednKey.dll`、`A800000002_7230B1_V01_T12_APP1.s19`，以及上级 `tool` 目录中的 `BMS-DUCAR_FlashDriver.s19`。APP S19 的数据从 `0x08010000` 开始，内容是 BIN 去掉 128 字节 DUCAR 头后的 APP；BOOT 直接写 APP1，并校验 APP CRC16。
+该 ZCANPRO 流程引用 `tool\uds_upgrade` 中的 `SeednKey.dll`、`rt5_crc32_release.s19`，以及上级 `tool` 目录中的 `BMS-DUCAR_FlashDriver.s19`。APP S19 的数据从 `0x08010000` 开始，内容是原始 APP，不含 DUCAR 头包和 BIN 块对齐填充；BOOT 直接写 APP1，并校验 APP CRC16。S19 输出位置由 `tool\config.json` 的 `n32.app1_s19` 配置。
 `SeednKey.dll` 是客户提供的 ZCANPRO 本地依赖，请放在 `tool\uds_upgrade`；源代码提交不包含该 DLL。
 
 构建脚本遇到任一 Keil 编译错误会停止，不会重新打包旧的 APP 输出文件。
 
-构建脚本开始时会先删除上次生成的 APP1 S19，避免链接失败后仍误导入旧升级镜像。只有 BOOT 和 APP 均成功链接并重新生成 BIN 后，才会生成可导入的 APP1 S19。
+构建脚本开始时会先删除上次生成的 APP1 S19，避免链接失败后仍误导入旧升级镜像。只有 BOOT、APP、BIN 和 HEX 均成功生成后，工具才会写出新的 APP1 S19。
 
 ## 临时出包
 
