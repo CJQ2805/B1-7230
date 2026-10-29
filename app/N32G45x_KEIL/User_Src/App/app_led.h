@@ -22,7 +22,7 @@
 /* 初始化LD1~LD5显示输出，默认全部熄灭。 */
 void app_led_init(void);
 
-/* 10ms业务调用：按键在位时显示SOC；充电由DETC在位触发充电动画。 */
+/* 10ms业务调用：充电状态显示动画；DETC在位未充电时SOC常亮。 */
 void app_led_task(void);
 
 #endif

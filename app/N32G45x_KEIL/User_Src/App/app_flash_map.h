@@ -89,12 +89,12 @@
 #define APP_FLASH_MAP_LOG_RTD_PAGE_COUNT_VALUE  24UL
 #define APP_FLASH_MAP_LOG_RTD_PAGE_COUNT        ((uint16_t)APP_FLASH_MAP_LOG_RTD_PAGE_COUNT_VALUE)
 
-/* CAL2共享电流参数双页提交日志；位于实时LOG的24页之后。 */
-#define APP_FLASH_MAP_CAL2_A_ADDR               ((uint32_t)0x0807F000UL)
-#define APP_FLASH_MAP_CAL2_B_ADDR               ((uint32_t)0x0807F800UL)
+/* 末尾两页预留，不得用作电流校准存储。 */
+#define APP_FLASH_MAP_RESERVED_PAGE_A_ADDR      ((uint32_t)0x0807F000UL)
+#define APP_FLASH_MAP_RESERVED_PAGE_B_ADDR      ((uint32_t)0x0807F800UL)
 
 #if (0x08070800UL + (APP_FLASH_MAP_LOG_RTD_PAGE_COUNT_VALUE * 0x800UL)) > 0x0807F000UL
-#error "Realtime LOG overlaps CAL2 journal"
+#error "Realtime LOG overlaps reserved pages"
 #endif
 
 /* 防止后续调整实时LOG页数时越过内部Flash末地址。 */

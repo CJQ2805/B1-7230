@@ -17,8 +17,8 @@
 
 /* 额定容量   mAh*/
 #define APP_PARAM_BAT_CAPACITY         30000   //30Ah
-/* 最大允许充电电压，单位mV；当前20S电池包配置为84V。 */
-#define APP_PARAM_MAX_CHARGE_VOLTAGE_MV 84000U
+/* 最大允许充电电压，单位mV；当前20S电池包配置为85.6V。 */
+#define APP_PARAM_MAX_CHARGE_VOLTAGE_MV 85600U
 
 /* 宗申B1主动通信：KEY缺失时，电流归零达到该时间后停止发送，单位ms。 */
 #define APP_PARAM_ZS_B1_TX_IDLE_TIMEOUT_MS (1UL * 60UL * 1000UL)
@@ -41,10 +41,10 @@
  * 出包T版本：
  * 打包文件名使用，显示时带T前缀，用于临时调试版本，不进行生产只迭代小版本，生产时大版本V+1的情况下，小版本必须置1，例如T1,最小单位为1。 */
 /* 升级包T版本字符串，用于生成升级文件名。 */
-#define APP_PARAM_PACKAGE_T_VERSION "T14"
+#define APP_PARAM_PACKAGE_T_VERSION "T15"
 
 /* DUCAR CAN通信协议版本：A0.9=0x09，F200的Data3返回此标识。 */
-#define APP_PARAM_CAN_PROTOCOL_VERSION 0x0AU
+#define APP_PARAM_CAN_PROTOCOL_VERSION 0xBU
 
 /*
  * BMS硬件拓扑配置：
@@ -137,15 +137,15 @@
  *
  * AFE底层换算出真实电流后，会先经过这个死区处理：
  * - 电流绝对值小于该值时，统一归零。
- * - 归零后的业务电流给保护、方向判断和低功耗使用；
- * - current_ma仍保留校准后的实际小电流，供显示、通信和LOG使用。
+ * - 归零后的业务电流给通信、保护、方向判断和低功耗使用；
+ * - current_ma仍保留校准后的实际小电流，供SOC积分和LOG使用。
  *
- * 当前配置为300mA：
- * - 299mA以内认为是采样零漂或无明显电流，按0mA处理。
- * - 大于等于300mA才认为确实存在充电或放电电流。
+ * 当前配置为200mA：
+ * - 电流绝对值小于200mA时按0mA处理。
+ * - 电流绝对值大于等于200mA时保留充电或放电电流。
  */
 /* 电流零点死区数值，单位mA。 */
-#define APP_PARAM_CURRENT_ZERO_DEADBAND_MA  300
+#define APP_PARAM_CURRENT_ZERO_DEADBAND_MA  200
 
 /* 当前项目CAN1总线波特率，单位kbit/s；整车节点必须使用相同配置。 */
 #define APP_PARAM_CAN1_BAUDRATE_KBPS         500U

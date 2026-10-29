@@ -17,7 +17,7 @@
  *   业务快照再读取这两个值。current_update_seq用于避免重复累计同一个AFE旧样本。
  *
  * 注意事项：
- *   1. 新校准记录写入当前Flash映射中预留的CAL2双页日志；仅启动时兼容读取旧Page0记录。
+ *   1. 电流校准记录与SN、产品模式和电压校准共用Page0，更新时保留其他记录。
  *   2. K使用K_PPM保存，避免直接发送浮点数，也避免固定Q格式的整数溢出和歧义。
  *   3. 0A点为可选项；未单独校准时默认AFE原始零点R0=0，推荐标定时仍先采集0A。
  *   4. 当前AFE电流是分步采样，通常约700ms才产生一个新电流值；5个新样本的校准时间约3.5s，
@@ -27,10 +27,9 @@
 
 #include "App/app_flash_map.h"
 #include "App/app_param.h"
-#include "Driver/d_flash.h"
+#include "App/app_param_api.h"
 #include "HSI_afe/hsi_afe.h"
 
-#include <stddef.h>
 #include <string.h>
 
 #ifdef APP_CURRENT_CALIB_HOST_TEST
@@ -61,24 +60,6 @@ typedef char app_current_calib_record_must_end_at_voltage_offset[
 typedef char app_current_calib_record_must_be_14_bytes[
     (sizeof(app_current_calib_flash_t) == 14U) ? 1 : -1];
 
-/* 每个记录完整包含一组K/B，CRC校验后最后单独写提交字。 */
-typedef struct
-{
-    uint32_t magic;
-    uint32_t version;
-    uint32_t generation;
-    uint32_t k_ppm;
-    int32_t b_ma;
-    int32_t zero_raw_ma;
-    uint32_t flags;
-    uint32_t crc;
-    uint32_t commit;
-} app_current_calib_journal_t;
-
-#define APP_CAL2_JOURNAL_MAGIC  ((uint32_t)0x324C4143UL)
-#define APP_CAL2_JOURNAL_COMMIT ((uint32_t)0xA55A5AA5UL)
-#define APP_CAL2_JOURNAL_SLOTS  (APP_FLASH_MAP_FLASH_PAGE_SIZE / (uint32_t)sizeof(app_current_calib_journal_t))
-
 #ifdef APP_CURRENT_CALIB_HOST_TEST
 extern const uint8_t *app_current_calib_test_flash_ptr(uint32_t addr);
 #define APP_CAL2_FLASH_PTR(addr) app_current_calib_test_flash_ptr(addr)
@@ -86,116 +67,17 @@ extern const uint8_t *app_current_calib_test_flash_ptr(uint32_t addr);
 #define APP_CAL2_FLASH_PTR(addr) ((const uint8_t *)(addr))
 #endif
 
-static uint32_t app_cal2_crc32(const uint8_t *data, uint32_t len)
+/* 在共享参数页更新14字节UC记录，整页其他数据由参数模块保留。 */
+static bool app_current_calib_save_values(uint32_t k_ppm, int32_t b_ma, int32_t zero_raw_ma)
 {
-    uint32_t crc = 0xFFFFFFFFUL;
-    uint32_t i;
-    uint8_t bit;
-    for (i = 0U; i < len; ++i)
-    {
-        crc ^= data[i];
-        for (bit = 0U; bit < 8U; ++bit)
-        {
-            crc = (crc >> 1U) ^ ((crc & 1U) != 0U ? 0xEDB88320UL : 0U);
-        }
-    }
-    return ~crc;
-}
-
-static bool app_cal2_record_valid(const app_current_calib_journal_t *record)
-{
-    return (record->magic == APP_CAL2_JOURNAL_MAGIC) &&
-           (record->version == 1U) &&
-           (record->commit == APP_CAL2_JOURNAL_COMMIT) &&
-           (record->k_ppm != 0U) &&
-           (record->crc == app_cal2_crc32((const uint8_t *)record, 28U));
-}
-
-static bool app_cal2_journal_latest(app_current_calib_journal_t *latest,
-                                    uint32_t *latest_page)
-{
-    uint32_t pages[2] = {APP_FLASH_MAP_CAL2_A_ADDR, APP_FLASH_MAP_CAL2_B_ADDR};
-    uint32_t page_index;
-    uint32_t slot;
-    bool found = false;
-    for (page_index = 0U; page_index < 2U; ++page_index)
-    {
-        for (slot = 0U; slot < APP_CAL2_JOURNAL_SLOTS; ++slot)
-        {
-            const app_current_calib_journal_t *record =
-                (const app_current_calib_journal_t *)APP_CAL2_FLASH_PTR(
-                    pages[page_index] + slot * (uint32_t)sizeof(*record));
-            if ((record != 0) && app_cal2_record_valid(record) &&
-                ((!found) || ((int32_t)(record->generation - latest->generation) > 0)))
-            {
-                *latest = *record;
-                *latest_page = pages[page_index];
-                found = true;
-            }
-        }
-    }
-    return found;
-}
-
-static bool app_cal2_journal_save(uint32_t k_ppm, int32_t b_ma, int32_t zero_raw_ma)
-{
-    app_current_calib_journal_t latest;
-    app_current_calib_journal_t record;
-    uint32_t latest_page = 0U;
-    uint32_t target_page;
-    uint32_t target_addr = 0U;
-    uint32_t slot;
-    const app_current_calib_journal_t *written;
-    bool has_latest;
-    bool result = false;
-
-    if (!d_flash_acquire(D_FLASH_MUTEX_TIMEOUT_MS))
-    {
-        return false;
-    }
-    has_latest = app_cal2_journal_latest(&latest, &latest_page);
-    target_page = has_latest ? latest_page : APP_FLASH_MAP_CAL2_A_ADDR;
-    for (slot = 0U; slot < APP_CAL2_JOURNAL_SLOTS; ++slot)
-    {
-        uint32_t addr = target_page + slot * (uint32_t)sizeof(record);
-        if (d_flash_is_blank(addr, (uint32_t)sizeof(record)))
-        {
-            target_addr = addr;
-            break;
-        }
-    }
-    if (target_addr == 0U)
-    {
-        /* 先保留最新有效页；仅擦另一页。提交成功前旧K/B始终可恢复。 */
-        target_page = (target_page == APP_FLASH_MAP_CAL2_A_ADDR) ?
-                      APP_FLASH_MAP_CAL2_B_ADDR : APP_FLASH_MAP_CAL2_A_ADDR;
-        if (!d_flash_erase_page(target_page))
-        {
-            goto done;
-        }
-        target_addr = target_page;
-    }
-    memset(&record, 0xFF, sizeof(record));
-    record.magic = APP_CAL2_JOURNAL_MAGIC;
-    record.version = 1U;
-    record.generation = has_latest ? latest.generation + 1U : 1U;
+    app_current_calib_flash_t record;
+    record.tag = APP_FLASH_TAG_CURRENT_CALIB;
     record.k_ppm = k_ppm;
     record.b_ma = b_ma;
     record.zero_raw_ma = zero_raw_ma;
-    record.flags = 0U;
-    record.crc = app_cal2_crc32((const uint8_t *)&record, 28U);
-    record.commit = APP_CAL2_JOURNAL_COMMIT;
-    if (!d_flash_write(target_addr, (const uint8_t *)&record, 32U) ||
-        !d_flash_write(target_addr + 32U, (const uint8_t *)&record.commit, 4U))
-    {
-        goto done;
-    }
-    written = (const app_current_calib_journal_t *)APP_CAL2_FLASH_PTR(target_addr);
-    result = (written != 0) && app_cal2_record_valid(written) &&
-             (memcmp(written, &record, sizeof(record)) == 0);
-done:
-    d_flash_release();
-    return result;
+    return app_param_flash_page_update(APP_FLASH_MAP_DB_PARAM_CURRENT_CALIB_OFFSET,
+                                       (const uint8_t *)&record,
+                                       (uint32_t)sizeof(record));
 }
 
 typedef struct
@@ -655,29 +537,18 @@ int32_t app_current_calib_calculate_output(uint32_t k_ppm,
     return app_current_calib_saturate_i32(s64CalibratedOutputMa);
 }
 
-/* 所有新校准（包含旧接口）统一保存到断电安全的双页日志。 */
+/* 所有新校准（包含旧接口）统一保存到共享参数页。 */
 static bool app_current_calib_save(void)
 {
-    return app_cal2_journal_save(s_app_current_calib.k_ppm,
+    return app_current_calib_save_values(s_app_current_calib.k_ppm,
                                  s_app_current_calib.b_ma,
                                  s_app_current_calib.zero_raw_ma);
 }
 
-/* 优先从CAL2日志恢复；没有有效日志时兼容旧“UC”Page0记录，否则使用默认K=1、B=0、R0=0。 */
+/* 从共享参数页恢复UC记录；无有效记录时使用默认K=1、B=0、R0=0。 */
 static void app_current_calib_load(void)
 {
     const app_current_calib_flash_t *ptFlashRecord;
-    app_current_calib_journal_t latest;
-    uint32_t latest_page = 0U;
-
-    if (app_cal2_journal_latest(&latest, &latest_page))
-    {
-        s_app_current_calib.k_ppm = latest.k_ppm;
-        s_app_current_calib.b_ma = latest.b_ma;
-        s_app_current_calib.zero_raw_ma = latest.zero_raw_ma;
-        return;
-    }
-
     ptFlashRecord = (const app_current_calib_flash_t *)APP_CAL2_FLASH_PTR(
         APP_FLASH_MAP_DB_PARAM_ADDR + APP_FLASH_MAP_DB_PARAM_CURRENT_CALIB_OFFSET);
     if ((ptFlashRecord->tag != APP_FLASH_TAG_CURRENT_CALIB) || (ptFlashRecord->k_ppm == 0U))
@@ -859,7 +730,7 @@ sample_done:
         return;
     }
 
-    save_ok = app_cal2_journal_save(k_ppm, b_ma, zero_raw);
+    save_ok = app_current_calib_save_values(k_ppm, b_ma, zero_raw);
 
     APP_CAL2_CRITICAL_ENTER();
     if ((s_cal2.phase == APP_CAL2_SAVING) && (s_cal2.session == save_session))

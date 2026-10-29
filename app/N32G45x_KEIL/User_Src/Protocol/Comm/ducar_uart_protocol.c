@@ -757,7 +757,7 @@ static void ducar_bms_reply_current(uint8_t cmd)
     }
 
     /* 协议定义为int32_t、单位mA，小端发送；正数充电，负数放电。 */
-    ducar_bms_put_i32(au8ResponseData, &u8ResponseLength, ptSnapshot->current_ma);
+    ducar_bms_put_i32(au8ResponseData, &u8ResponseLength, ptSnapshot->current_business_ma);
     ducar_bms_send_frame(cmd, au8ResponseData, u8ResponseLength);
 }
 
@@ -1428,6 +1428,8 @@ static void ducar_bms_handle_bms_shutdown(const ducar_bms_frame_t *frame)
 }
 
 /* 处理BMS复位控制请求并安排复位动作。 */
+static uint8_t s_ducar_bms_reset_pending;
+
 static void ducar_bms_handle_bms_reset(const ducar_bms_frame_t *frame)
 {
     if (ducar_bms_is_simple_command(frame) == 0U)
@@ -1436,7 +1438,7 @@ static void ducar_bms_handle_bms_reset(const ducar_bms_frame_t *frame)
         return;
     }
 
-    if (app_bms_fault_save_shutdown_pf() == 0U)
+    if (!app_bms_soc_save_for_transition() || (app_bms_fault_save_shutdown_pf() == 0U))
     {
         ducar_bms_send_status(DUCAR_BMS_CMD_SET_BMS_RESET, DUCAR_BMS_NAK);
         return;
@@ -1451,7 +1453,7 @@ static void ducar_bms_handle_bms_reset(const ducar_bms_frame_t *frame)
     {
         return;
     }
-    d_system_reset();
+    s_ducar_bms_reset_pending = 1U;
 }
 
 /* 处理BMS故障清除控制请求。 */
@@ -1693,6 +1695,7 @@ void ducar_bms_handle_frame(const ducar_bms_frame_t *frame)
 /* 初始化BMS协议模块及UART日志状态。 */
 void ducar_uart_protocol_init(void)
 {
+    s_ducar_bms_reset_pending = 0U;
     s_ducar_bms_log_export.state = DUCAR_BMS_LOG_EXPORT_IDLE;
     s_ducar_bms_log_export.request_count = 0U;
     s_ducar_bms_log_export.next_index = 0U;
@@ -1826,6 +1829,14 @@ static void ducar_bms_log_export_task_protocol(void)
 /* 执行一次UART日志导出协议任务。 */
 void ducar_bms_uart_log_task(void)
 {
+    if (s_ducar_bms_reset_pending != 0U)
+    {
+        if (app_bms_soc_save_for_transition())
+        {
+            d_system_reset();
+        }
+        return;
+    }
     ducar_bms_soc_reply_task_protocol();
     if (s_ducar_bms_soc_pending_cmd == DUCAR_BMS_SOC_CMD_NONE)
     {

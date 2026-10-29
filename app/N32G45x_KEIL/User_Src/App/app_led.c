@@ -3,8 +3,9 @@
  *   管理电池SOC对应的LD1~LD5显示。
  *
  * 显示规则：
- *   0%全灭；1~20%从LED5开始点亮；之后每增加20%向LED1方向增加一颗，81~100%点亮5颗。
- *   非充电时按键在位才显示SOC；充电时由DETC在位触发充电显示。
+ *   按20%一档从LED5向LED1递增；非充电普通显示时低于10%闪烁最低一格。
+ *   充电状态显示充电动画；DETC在位但未充电时显示常亮SOC。
+ *   DETC不在位且未充电时，按键在位才显示SOC。
  *   充电未满时下一格以500ms亮灭交替闪烁，SOC=100%时全部常亮。
  *
  * 说明：
@@ -12,6 +13,7 @@
  */
 #include "App/app_led.h"
 #include "App/app_bms_snapshot.h"
+#include "App/app_bms_status.h"
 #include "Board/board_io.h"
 
 static uint16_t s_u16AppLedBlinkCount;
@@ -137,11 +139,11 @@ static void app_led_display_charging_soc(uint8_t u8SocPercent)
     app_led_set_charging_level(u8StableLedCount);
 }
 
-static void app_led_display_soc(uint8_t u8SocPercent)
+static void app_led_display_soc(uint8_t u8SocPercent, uint8_t u8Steady)
 {
     uint8_t u8LedCount;
 
-    if (u8SocPercent < APP_LED_LOW_SOC_THRESHOLD_PERCENT)
+    if ((u8Steady == 0U) && (u8SocPercent < APP_LED_LOW_SOC_THRESHOLD_PERCENT))
     {
         app_led_reset_blink();
         app_led_update_low_soc_blink();
@@ -157,6 +159,11 @@ static void app_led_display_soc(uint8_t u8SocPercent)
     app_led_reset_blink();
     app_led_reset_low_soc_blink();
     u8LedCount = app_led_soc_to_count(u8SocPercent);
+    if ((u8Steady != 0U) && (u8LedCount == 0U))
+    {
+        /* 充电器在位且未充电时，0%也以最低一格常亮表示连接。 */
+        u8LedCount = 1U;
+    }
     board_io_mcu_ld1_set((u8LedCount >= 5U) ? APP_LED_ON_LEVEL : APP_LED_OFF_LEVEL);
     board_io_mcu_ld2_set((u8LedCount >= 4U) ? APP_LED_ON_LEVEL : APP_LED_OFF_LEVEL);
     board_io_mcu_ld3_set((u8LedCount >= 3U) ? APP_LED_ON_LEVEL : APP_LED_OFF_LEVEL);
@@ -177,10 +184,16 @@ void app_led_task(void)
 
     app_bms_snapshot_read(&tAppBmsSnapshot);
 
-    if (tAppBmsSnapshot.signal.input.mcu_detc != 0U)
+    if (tAppBmsSnapshot.bms_work_status == APP_BMS_STATUS_CHARGE)
     {
         app_led_reset_low_soc_blink();
         app_led_display_charging_soc(tAppBmsSnapshot.soc.u8display_soc);
+        return;
+    }
+
+    if (tAppBmsSnapshot.signal.input.mcu_detc != 0U)
+    {
+        app_led_display_soc(tAppBmsSnapshot.soc.u8display_soc, 1U);
         return;
     }
 
@@ -192,5 +205,5 @@ void app_led_task(void)
         return;
     }
 
-    app_led_display_soc(tAppBmsSnapshot.soc.u8display_soc);
+    app_led_display_soc(tAppBmsSnapshot.soc.u8display_soc, 0U);
 }

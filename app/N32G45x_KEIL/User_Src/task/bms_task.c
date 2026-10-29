@@ -40,6 +40,8 @@ static volatile uint8_t s_app_soc_ocv_save_status = APP_BMS_SOC_OCV_IDLE;
 static volatile uint8_t s_app_soc_write_status = APP_BMS_SOC_WRITE_IDLE;
 static volatile uint8_t s_app_soc_write_target;
 static uint8_t s_bms_shutdown_trigger_logged;
+static uint8_t s_soc_transition_retry_wait;
+static uint32_t s_soc_transition_retry_start_ms;
 
 /* 读取固定SOC页；“SC”标识或关键SOC数值无效时使用正常上电查表流程。 */
 static bool app_bms_soc_flash_restore(void)
@@ -78,7 +80,7 @@ static bool app_bms_soc_flash_restore(void)
 }
 
 /* 以单页固定地址保存SOC快照；写后回读比对，数据未变化时跳过擦写。 */
-static bool app_bms_soc_flash_save(void)
+static bool app_bms_soc_flash_save_internal(bool transition)
 {
     app_bms_soc_flash_record_t record;
     const app_bms_soc_flash_record_t *flash_record =
@@ -86,29 +88,42 @@ static bool app_bms_soc_flash_save(void)
     struct _app_soc_t saved_soc;
     bool result = false;
 
-    if ((gt_app_soc.s32battery_full_cap <= 0L) ||
-        (gt_app_soc.s32battery_full_cap > 1000000L) ||
-        (gt_app_soc.s32remain_cap < 0L) ||
-        (gt_app_soc.s32remain_cap > gt_app_soc.s32battery_full_cap) ||
-        (gt_app_soc.tsoc_capacity_data.s32real_cap_val < 0L) ||
-        (gt_app_soc.tsoc_capacity_data.s32real_cap_val > gt_app_soc.s32battery_full_cap) ||
-        (gt_app_soc.tsoc_capacity_data.s32display_cap_val < 0L) ||
-        (gt_app_soc.tsoc_capacity_data.s32display_cap_val > gt_app_soc.s32battery_full_cap) ||
-        (gt_app_soc.u8display_soc > 100U))
+    if (!d_flash_acquire(D_FLASH_MUTEX_TIMEOUT_MS))
     {
+        return false;
+    }
+
+    /* BMS任务独占算法写入；通信任务低于BMS任务，临界区内获取一致副本。 */
+    taskENTER_CRITICAL();
+    if (transition && ((s_app_soc_write_status != APP_BMS_SOC_WRITE_IDLE) ||
+                       (s_app_soc_ocv_save_status == APP_BMS_SOC_OCV_PENDING) ||
+                       (s_app_soc_force_ocv_flag != 0U)))
+    {
+        taskEXIT_CRITICAL();
+        d_flash_release();
+        return false;
+    }
+    memcpy(&saved_soc, &gt_app_soc, sizeof(saved_soc));
+    taskEXIT_CRITICAL();
+
+    if ((saved_soc.s32battery_full_cap <= 0L) ||
+        (saved_soc.s32battery_full_cap > 1000000L) ||
+        (saved_soc.s32remain_cap < 0L) ||
+        (saved_soc.s32remain_cap > saved_soc.s32battery_full_cap) ||
+        (saved_soc.tsoc_capacity_data.s32real_cap_val < 0L) ||
+        (saved_soc.tsoc_capacity_data.s32real_cap_val > saved_soc.s32battery_full_cap) ||
+        (saved_soc.tsoc_capacity_data.s32display_cap_val < 0L) ||
+        (saved_soc.tsoc_capacity_data.s32display_cap_val > saved_soc.s32battery_full_cap) ||
+        (saved_soc.u8display_soc > 100U))
+    {
+        d_flash_release();
         return false;
     }
 
     memset(&record, 0xFF, sizeof(record));
     record.tag = APP_FLASH_TAG_SOC;
-    memcpy(&saved_soc, &gt_app_soc, sizeof(saved_soc));
     saved_soc.u32tim_250ms_cnt = 0UL;
     memcpy(record.soc_data, &saved_soc, sizeof(saved_soc));
-
-    if (!d_flash_acquire(D_FLASH_MUTEX_TIMEOUT_MS))
-    {
-        return false;
-    }
 
     if (memcmp(flash_record, &record, sizeof(record)) == 0)
     {
@@ -125,6 +140,28 @@ static bool app_bms_soc_flash_save(void)
 
     d_flash_release();
     return result;
+}
+
+bool app_bms_soc_flash_save(void)
+{
+    return app_bms_soc_flash_save_internal(false);
+}
+
+bool app_bms_soc_save_for_transition(void)
+{
+    uint32_t now_ms = d_timer_get_ms();
+    bool saved;
+
+    /* 通信任务可能每1ms轮询；失败后限频，避免持续擦写损伤Flash。 */
+    if ((s_soc_transition_retry_wait != 0U) &&
+        ((uint32_t)(now_ms - s_soc_transition_retry_start_ms) < 1000UL))
+    {
+        return false;
+    }
+    saved = app_bms_soc_flash_save_internal(true);
+    s_soc_transition_retry_wait = saved ? 0U : 1U;
+    s_soc_transition_retry_start_ms = d_timer_get_ms();
+    return saved;
 }
 
 bool app_bms_force_soc_ocv(void)

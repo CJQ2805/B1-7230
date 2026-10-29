@@ -216,7 +216,7 @@ static bool app_low_power_is_current_idle(void)
         s_app_low_power_need_fresh_current = 0U;
     }
 
-    /* 使用300mA零点死区后的业务电流，不再维护第二套低功耗电流门限。 */
+    /* 使用零点死区后的业务电流，不再维护第二套低功耗电流门限。 */
     return (snapshot.current_10ma == 0);
 }
 

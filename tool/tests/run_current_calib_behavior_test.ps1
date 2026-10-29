@@ -15,4 +15,4 @@ if (!(Test-Path -LiteralPath $VcVars)) { throw "MSVC environment not found: $VcV
 $command = "cd /d `"$build`" && call `"$VcVars`" >nul && cl /nologo /std:c11 /utf-8 /W3 /DAPP_CURRENT_CALIB_HOST_TEST /I`"$stubs`" /I`"$sourceRoot`" /Fe`"$exe`" `"$test`" `"$implementation`" && `"$exe`" && cl /nologo /std:c11 /utf-8 /W3 /DAPP_CURRENT_CALIB_HOST_TEST /I`"$stubs`" /I`"$sourceRoot`" /Fe`"$mathExe`" `"$mathTest`" `"$mathSupport`" `"$implementation`" && `"$mathExe`""
 & $env:ComSpec /d /s /c $command
 if ($LASTEXITCODE -ne 0) { throw "Current calibration behavior test failed (exit $LASTEXITCODE); artifacts: $build" }
-Write-Output 'PASS: optional zero calibration, shared charge/discharge K/B, CAL2 journal, and signed-point math.'
+Write-Output 'PASS: shared parameter-page calibration, two reserved pages, optional zero, shared K/B, and signed-point math.'

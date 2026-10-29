@@ -20,8 +20,11 @@
 #include "Driver/d_flash.h"
 #include "Driver/d_system.h"
 #include "Driver/d_watchdog.h"
+#include "Task/bms_task.h"
 #include <stddef.h>
 #include <string.h>
+
+static uint8_t s_ducar_iap_reset_pending;
 
 typedef enum
 {
@@ -650,6 +653,11 @@ static void ducar_iap_handle_update_start(const ducar_iap_frame_t *frame)
         return;
     }
 
+    if (!app_bms_soc_save_for_transition())
+    {
+        ducar_iap_send_status(DUCAR_IAP_CMD_UPDATE_START, DUCAR_IAP_NAK);
+        return;
+    }
     ducar_iap_reset_update_state();
     if (!ducar_iap_erase_app2())
     {
@@ -810,7 +818,7 @@ static void ducar_iap_handle_jump(void)
             return;
         }
         d_timer_delay_ms(2U); /* 多留一点点时间给上位机收到ACK，再复位进入BOOT搬运。 */
-        d_system_reset();
+        s_ducar_iap_reset_pending = 1U;
     }
 }
 
@@ -883,7 +891,7 @@ bool ducar_iap_prepare_boot_move(uint32_t image_size, uint32_t image_crc32)
         return false;
     }
 
-    if (app_bms_fault_save_shutdown_pf() == 0U)
+    if (!app_bms_soc_save_for_transition() || (app_bms_fault_save_shutdown_pf() == 0U))
     {
         return false;
     }
@@ -923,7 +931,7 @@ bool ducar_iap_prepare_boot_wait_package(void)
         return false;
     }
 
-    if (app_bms_fault_save_shutdown_pf() == 0U)
+    if (!app_bms_soc_save_for_transition() || (app_bms_fault_save_shutdown_pf() == 0U))
     {
         return false;
     }
@@ -984,6 +992,7 @@ void ducar_iap_protocol_init(void)
     ducar_iap_mark_app_valid_if_default();
     s_ducar_iap_protocol_online = 0U;
     s_ducar_iap_protocol_last_rx_ms = 0UL;
+    s_ducar_iap_reset_pending = 0U;
 }
 
 /* 查询并返回UART协议在线状态。 */
@@ -1026,6 +1035,14 @@ void ducar_iap_protocol_task(void)
     ducar_iap_frame_t tIapFrame;
     ducar_iap_parse_result_t eParseResult;
 
+    if (s_ducar_iap_reset_pending != 0U)
+    {
+        if (app_bms_soc_save_for_transition())
+        {
+            d_system_reset();
+        }
+        return;
+    }
     ducar_iap_protocol_update_online_state();
 
     while (d_uart_read_byte(&u8ReceivedByte) != 0U)

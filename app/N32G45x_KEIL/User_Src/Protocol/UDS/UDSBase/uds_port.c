@@ -14,6 +14,7 @@
 #include "Driver/d_timer.h"
 #include "uds_service.h"
 #include "uds_tp.h"
+#include "Task/bms_task.h"
 
 static volatile uint8_t s_uds_reset_after_tx;
 
@@ -106,7 +107,10 @@ void uds_1ms_task(void)
         !app_can_iap_is_busy() &&
         d_can_is_tx_idle(&can0))
     {
-        s_uds_reset_after_tx = 0U;
-        d_system_reset();
+        if (app_bms_soc_save_for_transition())
+        {
+            s_uds_reset_after_tx = 0U;
+            d_system_reset();
+        }
     }
 }

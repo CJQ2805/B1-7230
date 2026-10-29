@@ -19,6 +19,7 @@
 #include "Driver/d_watchdog.h"
 #include "Protocol/Comm/ducar_can_protocol.h"
 #include "Protocol/IAP/ducar_uart_iap_protocol.h"
+#include "Task/bms_task.h"
 
 #define DUCAR_CAN_IAP_DATA_DLC                 ((uint8_t)8U)
 /* Upgrade session expires after ten seconds without a valid IAP frame. */
@@ -633,6 +634,12 @@ static void ducar_can_iap_receive_e1(const t_can_packet *ptCanPacket)
             return;
         }
 
+        if (!app_bms_soc_save_for_transition())
+        {
+            (void)ducar_can_iap_queue_e1_response(DUCAR_CAN_NAK,
+                                                   ducar_can_iap_get_sa(ptCanPacket));
+            return;
+        }
         /* 合法长度下清空旧会话，避免新升级沿用旧进度。 */
         ducar_can_iap_reset_transfer_state();
         /* 保存主机声明长度，首页头部还要再次核对。 */
@@ -943,12 +950,23 @@ void ducar_can_iap_protocol_task(void)
         if (d_can_is_tx_idle(&can0))
         {
             /* 最后一帧已经离开发送邮箱，此时复位后由BOOT执行搬运。 */
-            d_system_reset();
+            if (app_bms_soc_save_for_transition())
+            {
+                d_system_reset();
+            }
         }
         else if (++u8CanIapTxRetryTicks >= DUCAR_CAN_IAP_TX_RETRY_TICKS)
         {
             /* CCCC已经写入；邮箱状态异常时仍让BOOT接管搬运。 */
-            d_system_reset();
+            if (app_bms_soc_save_for_transition())
+            {
+                d_system_reset();
+            }
+            else
+            {
+                /* 保持超时状态，避免8位计数器回卷后长期停止重试。 */
+                u8CanIapTxRetryTicks = DUCAR_CAN_IAP_TX_RETRY_TICKS - 1U;
+            }
         }
     }
 }

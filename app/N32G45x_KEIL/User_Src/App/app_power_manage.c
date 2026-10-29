@@ -15,10 +15,12 @@
 #include "Driver/d_timer.h"
 #include "HSI_afe/hsi_afe.h"
 #include "RTT/SEGGER_RTT.h"
+#include "task/bms_task.h"
 
 #define APP_POWER_SHUTDOWN_DELAY_MS       ((uint32_t)10000U)
 #define APP_POWER_FINAL_LOG_TIMEOUT_MS    ((uint32_t)2000U)
 #define APP_POWER_RESET_FALLBACK_MS       ((uint32_t)3000U)
+#define APP_POWER_SOC_RETRY_MS            ((uint32_t)1000U)
 
 typedef enum
 {
@@ -35,6 +37,8 @@ static uint32_t s_app_power_state_start_ms;
 static uint8_t s_app_power_initialized;
 static volatile uint8_t s_app_power_request_log_pending;
 static uint8_t s_app_power_final_log_pending;
+static uint8_t s_app_power_soc_attempted;
+static uint32_t s_app_power_soc_attempt_ms;
 
 void app_power_manage_init(void)
 {
@@ -42,6 +46,8 @@ void app_power_manage_init(void)
     s_app_power_state = APP_POWER_STATE_IDLE;
     s_app_power_request_log_pending = 0U;
     s_app_power_final_log_pending = 0U;
+    s_app_power_soc_attempted = 0U;
+    s_app_power_soc_attempt_ms = 0U;
     s_app_power_initialized = 1U;
     app_low_power_set_shutdown_inhibit(0U);
     app_h_power_manage_set_poweroff_override(0U);
@@ -138,6 +144,7 @@ void app_power_manage_task(void)
             {
                 /* 第二条关机LOG保存MOS关闭后的最终快照；写入锁忙时也按2秒上限等待。 */
                 s_app_power_final_log_pending = 1U;
+                s_app_power_soc_attempted = 0U;
                 s_app_power_state_start_ms = now_ms;
                 s_app_power_state = APP_POWER_STATE_WAIT_FINAL_LOG;
             }
@@ -163,6 +170,19 @@ void app_power_manage_task(void)
                   (flush_status == APP_LOG_FLUSH_FAILED))) ||
                 ((uint32_t)(now_ms - s_app_power_state_start_ms) >= APP_POWER_FINAL_LOG_TIMEOUT_MS))
             {
+                if ((s_app_power_soc_attempted != 0U) &&
+                    ((uint32_t)(now_ms - s_app_power_soc_attempt_ms) < APP_POWER_SOC_RETRY_MS))
+                {
+                    return;
+                }
+                s_app_power_soc_attempted = 1U;
+                s_app_power_soc_attempt_ms = now_ms;
+                /* 在BMS任务内保存最新完整状态；失败时保持MOS关闭并重试。 */
+                if (!app_bms_soc_flash_save())
+                {
+                    SEGGER_RTT_printf(0, "SHUTDOWN stage=soc-save failed; retry\r\n");
+                    return;
+                }
                 /* AFE锁暂不可用时留在此状态重试，绝不越过AFE SHUTDOWN尝试切断12V。 */
                 uint8_t bAfeShutdownWritten = hsi_afe_shutdown(&gt_hsi_afe) ? 1U : 0U;
 
@@ -185,6 +205,18 @@ void app_power_manage_task(void)
         case APP_POWER_STATE_WAIT_POWER_DOWN:
             if ((uint32_t)(now_ms - s_app_power_state_start_ms) >= APP_POWER_RESET_FALLBACK_MS)
             {
+                if ((s_app_power_soc_attempted != 0U) &&
+                    ((uint32_t)(now_ms - s_app_power_soc_attempt_ms) < APP_POWER_SOC_RETRY_MS))
+                {
+                    return;
+                }
+                s_app_power_soc_attempted = 1U;
+                s_app_power_soc_attempt_ms = now_ms;
+                if (!app_bms_soc_flash_save())
+                {
+                    SEGGER_RTT_printf(0, "SHUTDOWN stage=reset-soc-save failed; retry\r\n");
+                    return;
+                }
                 SEGGER_RTT_printf(0,
                                   "SHUTDOWN fallback=software-reset elapsed=%lums afe_requested=%u\r\n",
                                   (unsigned long)(now_ms - s_app_power_state_start_ms),

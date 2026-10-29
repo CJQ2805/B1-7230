@@ -526,7 +526,7 @@ static bool zs_b1_send_status1(const app_bms_snapshot_t *snapshot)
     const t_charge_fault_A *charge_a = &snapshot->fault.active.detail.ucharge_fault_A.tcharge_fault_A;
     const t_charge_fault_B *charge_b = &snapshot->fault.active.detail.ucharge_fault_B.tcharge_fault_B;
     uint8_t data[ZS_B1_CAN_DLC] = {0U};
-    uint32_t discharge_ma = (snapshot->current_ma < 0) ? zs_b1_abs_current_ma(snapshot->current_ma) : 0U;
+    uint32_t discharge_ma = (snapshot->current_business_ma < 0) ? zs_b1_abs_current_ma(snapshot->current_business_ma) : 0U;
     uint16_t current_025a = zs_b1_limit_u12(discharge_ma / 250U);
     uint16_t max_discharge_025a = zs_b1_sop_01a_to_025a(snapshot->sop.s16MaxDischargeCurrent10mA);
     uint16_t max_feedback_025a;
@@ -605,7 +605,7 @@ static bool zs_b1_send_charge_control(const app_bms_snapshot_t *snapshot)
     uint16_t max_charge_005a = zs_b1_limit_charge_current_005a(
         (snapshot->sop.s16MaxChargeCurrent10mA > 0)
             ? (uint32_t)(uint16_t)snapshot->sop.s16MaxChargeCurrent10mA * 2U : 0U);
-    uint32_t actual_charge_ma = (snapshot->current_ma > 0) ? (uint32_t)snapshot->current_ma : 0U;
+    uint32_t actual_charge_ma = (snapshot->current_business_ma > 0) ? (uint32_t)snapshot->current_business_ma : 0U;
     uint16_t actual_charge_005a = zs_b1_limit_charge_current_005a(actual_charge_ma / 50U);
     uint16_t min_charge_voltage_001v = 0U;
     uint16_t max_charge_voltage_001v = zs_b1_limit_u16(snapshot->sop.u32MaxChargeVoltageMv / 10U);

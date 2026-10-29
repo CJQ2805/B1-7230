@@ -9,6 +9,8 @@
 uint8_t g_test_flash[2048];
 static uint8_t s_cal2_page_a[2048];
 static uint8_t s_cal2_page_b[2048];
+static uint32_t s_reserved_page_accesses;
+static uint8_t s_parameter_tail[2048U - 14U];
 hsi_afe_t gt_hsi_afe;
 
 static uint32_t s_last_flash_offset;
@@ -34,10 +36,16 @@ const uint8_t *app_current_calib_test_flash_ptr(uint32_t addr)
 {
     if (addr >= APP_FLASH_MAP_DB_PARAM_ADDR && addr < APP_FLASH_MAP_DB_PARAM_ADDR + 2048U)
         return &g_test_flash[addr - APP_FLASH_MAP_DB_PARAM_ADDR];
-    if (addr >= APP_FLASH_MAP_CAL2_A_ADDR && addr < APP_FLASH_MAP_CAL2_A_ADDR + 2048U)
-        return &s_cal2_page_a[addr - APP_FLASH_MAP_CAL2_A_ADDR];
-    if (addr >= APP_FLASH_MAP_CAL2_B_ADDR && addr < APP_FLASH_MAP_CAL2_B_ADDR + 2048U)
-        return &s_cal2_page_b[addr - APP_FLASH_MAP_CAL2_B_ADDR];
+    if (addr >= APP_FLASH_MAP_RESERVED_PAGE_A_ADDR && addr < APP_FLASH_MAP_RESERVED_PAGE_A_ADDR + 2048U)
+    {
+        ++s_reserved_page_accesses;
+        return &s_cal2_page_a[addr - APP_FLASH_MAP_RESERVED_PAGE_A_ADDR];
+    }
+    if (addr >= APP_FLASH_MAP_RESERVED_PAGE_B_ADDR && addr < APP_FLASH_MAP_RESERVED_PAGE_B_ADDR + 2048U)
+    {
+        ++s_reserved_page_accesses;
+        return &s_cal2_page_b[addr - APP_FLASH_MAP_RESERVED_PAGE_B_ADDR];
+    }
     return 0;
 }
 
@@ -63,11 +71,6 @@ bool d_flash_write(uint32_t addr, const uint8_t *data, uint32_t len)
     uint8_t *p = (uint8_t *)app_current_calib_test_flash_ptr(addr);
     uint32_t i;
     if (p == 0 || !d_flash_is_blank(addr, len)) return false;
-    if (len == 4U && s_fail_next_commit != 0U)
-    {
-        s_fail_next_commit = 0U;
-        return false;
-    }
     for (i = 0U; i < len; ++i) p[i] = data[i];
     s_flash_write_count++;
     return true;
@@ -77,6 +80,12 @@ bool app_param_flash_page_update(uint32_t offset, const uint8_t *data, uint32_t 
 {
     if ((data == 0) || ((offset + len) > (uint32_t)sizeof(g_test_flash)))
     {
+        return false;
+    }
+
+    if (s_fail_next_commit != 0U)
+    {
+        s_fail_next_commit = 0U;
         return false;
     }
 
@@ -131,15 +140,31 @@ int main(void)
     uint8_t status;
 
     memset(g_test_flash, 0xFF, sizeof(g_test_flash));
-    memset(s_cal2_page_a, 0xFF, sizeof(s_cal2_page_a));
-    memset(s_cal2_page_b, 0xFF, sizeof(s_cal2_page_b));
+    memset(g_test_flash + 14U, 0x5A, sizeof(s_parameter_tail));
+    memcpy(s_parameter_tail, g_test_flash + 14U, sizeof(s_parameter_tail));
+    memset(s_cal2_page_a, 0x3C, sizeof(s_cal2_page_a));
+    memset(s_cal2_page_b, 0xA5, sizeof(s_cal2_page_b));
     memset(&gt_hsi_afe, 0, sizeof(gt_hsi_afe));
     app_current_calib_init();
+    assert(s_reserved_page_accesses == 0U);
 
     /* 0A is optional: a known positive point is accepted against default R0=0. */
     assert(app_current_calib_get(&k_ppm, &b_ma));
     assert(k_ppm == APP_CURRENT_CALIB_K_DEFAULT_PPM);
     assert(b_ma == 0);
+    /* The calibrated value remains available to SOC; business current uses a strict 200 mA deadband. */
+    gt_hsi_afe.curr_raw = 199;
+    app_current_calib_task();
+    assert(gt_hsi_afe.curr_calibrated == 199 && gt_hsi_afe.curr_real == 0);
+    gt_hsi_afe.curr_raw = -199;
+    app_current_calib_task();
+    assert(gt_hsi_afe.curr_calibrated == -199 && gt_hsi_afe.curr_real == 0);
+    gt_hsi_afe.curr_raw = 200;
+    app_current_calib_task();
+    assert(gt_hsi_afe.curr_calibrated == 200 && gt_hsi_afe.curr_real == 200);
+    gt_hsi_afe.curr_raw = -200;
+    app_current_calib_task();
+    assert(gt_hsi_afe.curr_calibrated == -200 && gt_hsi_afe.curr_real == -200);
     sample_calibration_point(10000, 20000);
     assert_shared_calibration(500000U, 0);
 
@@ -150,11 +175,12 @@ int main(void)
     /* A negative known point produces the same shared K/B for both current polarities. */
     sample_calibration_point(-10000, -19900);
     assert_shared_calibration(500000U, -50);
-    assert(s_flash_write_count == 6U);
-    assert(s_cal2_page_a[0] == 'C');
-    assert(s_cal2_page_a[1] == 'A');
+    assert(s_flash_write_count == 3U);
+    assert(s_last_flash_offset == 0U && s_last_flash_length == 14U);
+    assert(g_test_flash[0] == 'U' && g_test_flash[1] == 'C');
+    assert(memcmp(g_test_flash + 14U, s_parameter_tail, sizeof(s_parameter_tail)) == 0);
 
-    /* A reboot restores the same common K/B from the committed journal record. */
+    /* A reboot restores the same common K/B from the shared parameter page. */
     app_current_calib_init();
     assert_shared_calibration(500000U, -50);
 
@@ -199,7 +225,7 @@ int main(void)
     app_current_calib_init();
     assert_shared_calibration(1000000U, -124);
 
-    /* An interrupted commit leaves the last complete pair effective, even after reboot. */
+    /* A rejected update leaves the previous pair effective, even after reboot. */
     gt_hsi_afe.curr_raw = 10000;
     gt_hsi_afe.current_update_seq++;
     app_current_calib_task();
@@ -235,13 +261,19 @@ int main(void)
     app_current_calib_cal2_advance_ms(15000U);
     assert(app_current_calib_cal2_request(5U, 3U, 0x1236U, 0, 0x3AU) == 0x0CU);
 
-    /* Crossing the 56-record page boundary must preserve the newest pair. */
+    /* Repeated updates preserve the shared parameter data and both reserved pages. */
     app_current_calib_init();
     for (uint8_t i = 0U; i < 60U; ++i)
     {
         sample_calibration_point(10000, 20000);
     }
-    assert(s_cal2_page_b[0] == 'C' && s_cal2_page_b[1] == 'A');
+    assert(s_reserved_page_accesses == 0U);
+    for (uint32_t i = 0U; i < sizeof(s_cal2_page_b); ++i)
+    {
+        assert(s_cal2_page_a[i] == 0x3CU);
+        assert(s_cal2_page_b[i] == 0xA5U);
+    }
+    assert(memcmp(g_test_flash + 14U, s_parameter_tail, sizeof(s_parameter_tail)) == 0);
     assert(app_current_calib_get(&k_ppm, &b_ma));
     app_current_calib_init();
     {

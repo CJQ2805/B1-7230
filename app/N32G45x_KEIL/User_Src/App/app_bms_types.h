@@ -223,7 +223,8 @@ typedef struct
 
     uint32_t bat_mv;                            /* 完整有效的逻辑单体电压累加总压，单位mV。 */
     uint32_t vbat_mv;                           /* AFE VBAT采样，单位mV。 */
-    int32_t current_ma;                         /* 实际电流，单位mA；保留校准后小电流，不套1A/2A阈值置零；正数充电，负数放电。 */
+    int32_t current_ma;                         /* 校准后电流，单位mA；保留小电流供SOC积分等使用，正数充电，负数放电。 */
+    int32_t current_business_ma;                /* 死区后的业务电流，单位mA；供通信等使用。 */
     uint32_t afe_current_update_seq;            /* AFE电流成功刷新序号；用于唤醒后确认已取得新样本。 */
     int16_t current_10ma;                       /* 业务电流，单位10mA；供现有保护阈值和方向判断使用，允许保留零死区/量化口径。 */
     uint8_t charging;                           /* 充电方向标志；当前由 current_10ma > 0 推导，不额外读取充电器状态位。 */

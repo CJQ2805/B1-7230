@@ -476,16 +476,7 @@ void SOC_FCCHandle(long s32current, unsigned int u32cell_arv_volt	,unsigned char
 			gt_app_soc.u8soc_fcc_flag, // 当前满充状态
 			0); // 条件持续到期后清除满充状态
 
-	if(!gt_app_soc.u8soc_fcc_flag && !u8ocv_flag) // 尚未满充且没有过压标志时，限制剩余容量上限
-	{
-
-		if(gt_app_soc.s32remain_cap >= gt_app_soc.s32battery_full_cap*199/200) // 容量已达到FCC的99.5%时执行上限钳位
-		{
-			gt_app_soc.s32remain_cap = (gt_app_soc.s32battery_full_cap*199/200); // 未确认满充时显示剩余容量最多保留到99.5%
-		}
-
-	}
-	else // 满充标志已置位或输入过压标志有效时，按满充状态同步各容量值
+	if(gt_app_soc.u8soc_fcc_flag || u8ocv_flag) // 满充标志已置位或输入过压标志有效时，按满充状态同步各容量值
 	{
 		gt_app_soc.u8soc_fcc_flag = 1; // 锁存满充状态
 		gt_app_soc.tsoc_fcc_data.u8handle_soc = 100; // CC模式的内部满充SOC记录
@@ -642,6 +633,13 @@ void SOC_FCCHandle(long s32current, unsigned int u32cell_arv_volt	,unsigned char
 		{
 			gt_app_soc.s32remain_cap = 0; // 容量下限钳位
 		}
+	}
+
+	/* 所有容量追赶结束后再限幅，防止未满充时每周期越限后又被压回。 */
+	if ((!gt_app_soc.u8soc_fcc_flag) && (!u8ocv_flag) &&
+	    (gt_app_soc.s32remain_cap > gt_app_soc.s32battery_full_cap * 199 / 200))
+	{
+		gt_app_soc.s32remain_cap = gt_app_soc.s32battery_full_cap * 199 / 200;
 	}
 
 	gt_app_soc.u8display_soc = gt_app_soc.s32remain_cap*100/gt_app_soc.s32battery_full_cap; // 由显示剩余容量换算整数百分比 SOC

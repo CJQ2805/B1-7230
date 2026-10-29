@@ -26,20 +26,20 @@
 /**************************用户修改的宏********************************/
 //充电为正，放电为负						  
 #define SOC_DESIGN_CAP						  APP_PARAM_BAT_CAPACITY //mAh 电池额定设计容量
-#define SOC_CURRENT_SELF_CONSUME    		  5        		  //mA   板子自耗电
-#define SOC_OFFSET_THRESHOLD   				  10		   	 	  //%    允许直接修改的SOC阈值(查表值和当前值差距大于该值直接修改SOC)
-#define SOC_CAP_OFFSET_THRESHOLD    		  SOC_DESIGN_CAP*0.1  //1mAh 允许直接修改的容量阈值（同上，容量差距太大直接修改SOC）
-#define SOC_CHAG_CURRENT_HANDLE     		  80		    	  //mA   允许计算SOC的充电电流
-#define SOC_DISCHRG_CHRRCENT_HANDLE 		  -80	        	  //mA   允许计算SOC的放电电流 
-#define SOC_HUNDREDTH_CAP           		  SOC_DESIGN_CAP*36   //mA   百分之一的容量所产生的电流
-#define SOC_COMPENSATE_RESISTANCE     		  14				  //mR   电池包充放电平均内阻
-#define SOC_HOW_LONG_SECOND_ALLOW_ADD_ONE     1             	  //S
+#define SOC_CURRENT_SELF_CONSUME    		  7        		         //mA   板子自耗电
+#define SOC_OFFSET_THRESHOLD   				  10		   	 	     //%    允许直接修改的SOC阈值(查表值和当前值差距大于该值直接修改SOC)
+#define SOC_CAP_OFFSET_THRESHOLD    		  SOC_DESIGN_CAP*0.1     //1mAh 允许直接修改的容量阈值（同上，容量差距太大直接修改SOC）
+#define SOC_CHAG_CURRENT_HANDLE     		  80		    	     //mA   允许计算SOC的充电电流
+#define SOC_DISCHRG_CHRRCENT_HANDLE 		  -80	        	     //mA   允许计算SOC的放电电流
+#define SOC_HUNDREDTH_CAP           		  SOC_DESIGN_CAP*36      //mA   百分之一的容量所产生的电流
+#define SOC_COMPENSATE_RESISTANCE     		  14				     //mR   电池包充放电平均内阻
+#define SOC_HOW_LONG_SECOND_ALLOW_ADD_ONE     1             	     //S
 /*
 快充满时的补偿点
 The compensation point when it's nearly full
 */
-#define SOC_CHAG_HIGH_SPEED_VOLTAGE_SOC       95			//%	   该值不建议修改
-#define SOC_CHAG_HIGH_SPEED_PERCENT_SECOND    5             //S    Up to the above Voltage and Current conditon,5S soc add 1%。
+#define SOC_CHAG_HIGH_SPEED_VOLTAGE_SOC       95			         //%	   该值不建议修改
+#define SOC_CHAG_HIGH_SPEED_PERCENT_SECOND    5                      //S    Up to the above Voltage and Current conditon,5S soc add 1%。
 
 /*
 快放空时的补偿点
@@ -47,20 +47,20 @@ The compensation point of the fast air
 */
 #define SOC_MAX_CUR_FILTER_LIMIT_VUL		   SOC_HUNDREDTH_CAP/SOC_CAP_CNT_VAL + 9  //SOC_HUNDREDTH_CAP/SOC_CAP_CNT_VAL + 最大放电电流/SOC_CAP_CNT_VAL
 
-#define SOC_DSG_CUV_VOLTAGE				   2700        		 // 欠压值
-#define SOC_DSG_SOC_RETURN_0               2900        		 // SOC允许归0值
-#define SOC_DSG_HIGH_SPEED_VOLTAGE_SOC     5			     //%    该值不建议修改
+#define SOC_DSG_CUV_VOLTAGE				   2700        		         // 欠压值
+#define SOC_DSG_SOC_RETURN_0               2900        		         // SOC允许归0值
+#define SOC_DSG_HIGH_SPEED_VOLTAGE_SOC     5			             //% 该值不建议修改
 
-#define FCC_SET_MODE             			   1             //0:CC充电模式     1:CV充电模式
-#define SOC_FCC_SET_DELAY_TIME			       5		     //S FCC的阈值时间，达到该电压和小于该电流时，持续该时间达满充
+#define FCC_SET_MODE             			   1                     //0:CC充电模式     1:CV充电模式
+#define SOC_FCC_SET_DELAY_TIME			       5		             //S FCC的阈值时间，达到该电压和小于该电流时，持续该时间达满充
 
 #define SOC_DISCHG_KEEP_ONE_VOLTAGE        3000
 /*
 静置时ocv参数设置
 */
-#define STAND_SOC_OCV_SET_DELAY_TIME		   60		    //1MIN
-#define SOC_STAND_OCV_CURRENT_THRESHOLD     200L        //mA 静置OCV校准允许的电流幅值
-#define STAND_SOC_SLEEP_DELAY_TIME		       4		    //250ms	   休眠所需时间
+#define STAND_SOC_OCV_SET_DELAY_TIME		   60		             //1MIN
+#define SOC_STAND_OCV_CURRENT_THRESHOLD     200L                     //mA          静置OCV校准允许的电流幅值
+#define STAND_SOC_SLEEP_DELAY_TIME		       4		             //250ms	   休眠所需时间
 
 /******************************************CC充电模式参数设置***********************************************************/
 #define SOC_FCC_SET_VOLTAGE                    3600
@@ -72,17 +72,17 @@ FCC判断阈值 CV模式
 The FCC determines the threshold
 */
 #define SOC_FCC_ACCELERATE_CONDITION			(((s32current > S0C_FCC_SET_STOP_CURRENT_MIN)&& (s32current < SOC_FCC_SET_STOP_CURRENT_MAX) && (u32cell_arv_volt > SOC_FCC_SET_MIN_CELL_VOLTAGE)) )
-#define SOC_FCC_SET_MIN_CELL_VOLTAGE            4000          //mV   FCC的阈值电压，达到该电压和小于该电流时，持续该时间达满充
-#define SOC_FCC_SET_STOP_CURRENT_MAX		    500           //mA   FCC的阈值电流，达到该电压和小于该电流时，持续该时间达满充
-#define S0C_FCC_SET_STOP_CURRENT_MIN            80		      //mA   FCC电流下限值，认为有充电的值。
+#define SOC_FCC_SET_MIN_CELL_VOLTAGE            4000                 //mV   FCC的阈值电压，达到该电压和小于该电流时，持续该时间达满充
+#define SOC_FCC_SET_STOP_CURRENT_MAX		    500                  //mA   FCC的阈值电流，达到该电压和小于该电流时，持续该时间达满充
+#define S0C_FCC_SET_STOP_CURRENT_MIN            80		             //mA   FCC电流下限值，认为有充电的值。
 /******************************************CV充电模式参数设置***********************************************************/
 /*
 FCC解除判断阈值
 FCC release judgment threshold
 */
-#define SOC_FCC_RESET_MIN_CELL_VOLTAGE          3900            //mV   FCC电压如果达到该值时，持续该时间，解除FCC
-#define SOC_FCC_RESET_CURRENT     		        -150            //mA   有该大小放电电流，持续该时间，解除FCC
-#define SOC_FCC_RESET_DELAY_TIME                1               //S    持续时间
+#define SOC_FCC_RESET_MIN_CELL_VOLTAGE          3900                 //mV   FCC电压如果达到该值时，持续该时间，解除FCC
+#define SOC_FCC_RESET_CURRENT     		        -500                 //mA   有该大小放电电流，持续该时间，解除FCC
+#define SOC_FCC_RESET_DELAY_TIME                1                    //S    持续时间
 
 /************************************************************************************************************************/
 
@@ -95,7 +95,7 @@ FCC使用的设计容量衰减
 
 /************************************************************************************************************************/
 
-#define SOC_CAP_CNT_VAL 			             14400   	   //1mah  3600 * 4  250MS
+#define SOC_CAP_CNT_VAL 			             14400   	         //1mah  3600 * 4  250MS
 
 struct _soc_accumulate_capacity_data_t{
 

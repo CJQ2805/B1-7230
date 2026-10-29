@@ -223,11 +223,13 @@ static void app_bms_snapshot_update_current(app_bms_snapshot_t *ptSnapshot)
 {
     int32_t s32Current10ma;
 
-    /* current_ma给通信和上层显示使用，保留K/B校准后的实际小电流，不套用1A零死区。 */
+    /* 保留校准后的实际小电流供SOC积分等使用。 */
     ptSnapshot->current_ma = gt_hsi_afe.curr_calibrated;
+    /* 通信使用死区后的毫安值，避免10mA量化或16位饱和。 */
+    ptSnapshot->current_business_ma = gt_hsi_afe.curr_real;
     ptSnapshot->afe_current_update_seq = gt_hsi_afe.current_update_seq;
     /* current_10ma给保护和充放电方向判断使用，继续采用零死区后的业务电流。 */
-    s32Current10ma = gt_hsi_afe.curr_real / 10;
+    s32Current10ma = ptSnapshot->current_business_ma / 10;
 
     if (s32Current10ma > 32767)
     {

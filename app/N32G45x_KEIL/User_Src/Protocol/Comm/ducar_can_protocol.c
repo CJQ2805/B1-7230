@@ -450,7 +450,7 @@ static void ducar_can_send_f20d(void)
     /* 快照总压单位为mV，协议F20D要求0.01V，因此除以10。 */
     u32BatVoltage01V = tBmsSnapshot.bat_mv / 10U;
     /* 快照电流单位为mA，协议F20D要求0.01A，因此除以10并保留正负号。 */
-    s32Current01A = tBmsSnapshot.current_ma / 10;
+    s32Current01A = tBmsSnapshot.current_business_ma / 10;
 
     /* F20D: 总压0.01V、实际电流0.01A、SOC0.1%、SOH、DETC接入状态。 */
     /* Data0~Data1写入总压。 */
@@ -2267,7 +2267,8 @@ static void ducar_can_receive_reset_command(const t_can_packet *ptCanPacket,
     }
 
     /* 先保存关机保护状态；保存失败时不能继续执行复位/关机。 */
-    if (app_bms_fault_save_shutdown_pf() == 0U)
+    if (((eRequestedAction == DUCAR_CAN_ACTION_RESET) && !app_bms_soc_save_for_transition()) ||
+        (app_bms_fault_save_shutdown_pf() == 0U))
     {
         (void)ducar_can_queue_ack(DUCAR_CAN_NAK,
                                   ptCanIdFields->u8Sa,
@@ -2863,6 +2864,11 @@ void ducar_can_control_reply_task(void)
         /* 邮箱和软件发送队列均空闲时可以执行动作。 */
         if (d_can_is_tx_idle(&can0))
         {
+            if ((eCanActionWaitingTx == DUCAR_CAN_ACTION_RESET) &&
+                !app_bms_soc_save_for_transition())
+            {
+                return;
+            }
             /* 取出待执行动作，并清除挂起标志。 */
             eActionToRun = eCanActionWaitingTx;
             eCanActionWaitingTx = DUCAR_CAN_ACTION_NONE;
@@ -2870,6 +2876,12 @@ void ducar_can_control_reply_task(void)
         /* 邮箱未空闲时累计等待时间。 */
         else if (++u8CanActionWaitTicks >= DUCAR_CAN_ACK_WAIT_MAX_TICKS)
         {
+            if ((eCanActionWaitingTx == DUCAR_CAN_ACTION_RESET) &&
+                !app_bms_soc_save_for_transition())
+            {
+                u8CanActionWaitTicks = DUCAR_CAN_ACK_WAIT_MAX_TICKS - 1U;
+                return;
+            }
             /* TX硬件异常时最多等100ms，不让复位/关机命令永久挂起。 */
             eActionToRun = eCanActionWaitingTx;
             eCanActionWaitingTx = DUCAR_CAN_ACTION_NONE;
