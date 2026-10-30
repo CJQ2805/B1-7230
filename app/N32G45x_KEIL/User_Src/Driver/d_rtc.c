@@ -1,6 +1,6 @@
 /*
  * 文件作用：
- *   N32G45X RTC驱动实现，使用内部低速时钟提供时间读写和低功耗唤醒能力。
+ *   N32G45X RTC驱动实现，使用外部低速晶振提供时间读写和低功耗唤醒能力。
  *
  * 主要用途：
  *   1. 初始化RTC基础计时。
@@ -8,45 +8,29 @@
  *   3. 配置RTC唤醒中断作为STOP模式主动唤醒源。
  *
  * 适用范围：
- *   只适用于当前没有外部RTC晶振的N32G45X硬件。更换MCU或RTC时保留 d_rtc.h，对本文件重新实现。
+ *   适用于配有32.768kHz外部RTC晶振的N32G45X硬件。更换MCU或RTC时保留 d_rtc.h，对本文件重新实现。
  *
  * 调用关系：
  *   main.c 初始化RTC；LOG、通信、低功耗模块调用 d_rtc_xxx()。
  *
  * 注意事项：
- *   当前使用LSI，时间精度不能等同外部晶振；掉电无备份电源时绝对时间可能失效。
+ *   当前使用LSE；掉电无备份电源时绝对时间可能失效。
  */
 #include "Driver/d_rtc.h" /* RTC底层封装对外接口和时间结构体定义。 */
-#include "n32g45x_gpio.h"
-#include "n32g45x_tim.h"
+#include "Driver/d_timer.h" /* 以初始化后的1ms时基限制LSE起振等待时间。 */
 
 #include "n32g45x_bkp.h"   /* 备份寄存器接口，用来保存RTC是否已设置过的标记。 */
 #include "n32g45x_exti.h"  /* RTC WakeUp通过EXTI20唤醒STOP模式。 */
 #include "n32g45x_pwr.h"   /* 电源/备份域访问接口，访问RTC备份域前必须打开权限。 */
-#include "n32g45x_rcc.h"   /* RCC时钟接口，用来开启LSI并选择RTC时钟源。 */
+#include "n32g45x_rcc.h"   /* RCC时钟接口，用来开启LSE并选择RTC时钟源。 */
 #include "n32g45x_rtc.h"   /* 国民标准库RTC日历读写接口。 */
 #include "misc.h"           /* 配置RTC_IRQn中断优先级。 */
 
 #define D_RTC_BKP_MARK_REG        BKP_DAT1      /* 使用备份寄存器1保存“RTC时间已写入”的标记。 */
 #define D_RTC_BKP_MARK_VALUE      ((uint16_t)0xA55AU) /* 标记值，读到这个值才认为RTC时间可信。 */
-#define D_RTC_LSI_READY_TIMEOUT   ((uint32_t)200000UL) /* 等待LSI起振的超时计数，避免硬件异常时死等。 */
-#define D_RTC_LSI_ASYNC_PREDIV    ((uint32_t)124U) /* 保留异步分频值124，异步分频系数为125。 */
-
-/*
- * RTC初始化时通过TIM5_CH4捕获LSI，不再使用根据单次实测反推的固定频率。
- * 捕获失败时使用40kHz保底值，保证RTC仍然可以正常初始化，不会在初始化阶段死等。
- */
-#define D_RTC_LSI_FALLBACK_HZ      ((uint32_t)40000UL)
-#define D_RTC_LSI_CAPTURE_SAMPLES  ((uint32_t)8UL)
-#define D_RTC_LSI_CAPTURE_TIMEOUT  ((uint32_t)200000UL)
-#define D_RTC_LSI_MIN_HZ           ((uint32_t)20000UL)
-#define D_RTC_LSI_MAX_HZ           ((uint32_t)80000UL)
-#define D_RTC_LSI_SYNC_PREDIV      ((uint32_t)d_rtc_prepare_lsi())
-
-/* 供仿真观察RTC实际校准结果，不参与业务判断。 */
-volatile uint32_t gu32_d_rtc_lsi_hz = D_RTC_LSI_FALLBACK_HZ;
-volatile uint32_t gu32_d_rtc_lsi_timer_hz = 0UL;
-volatile uint8_t gu8_d_rtc_lsi_measure_ok = 0U;
+#define D_RTC_LSE_READY_TIMEOUT_MS ((uint32_t)5000UL) /* 外部晶振起振最多等待5秒。 */
+#define D_RTC_LSE_ASYNC_PREDIV     ((uint32_t)127U) /* 32768 / (128 * 256) = 1Hz。 */
+#define D_RTC_LSE_SYNC_PREDIV      ((uint32_t)255U)
 
 static uint8_t s_d_rtc_inited;      /* 本次上电后RTC底层是否已经初始化成功。 */
 static uint8_t s_d_rtc_init_failed; /* 普通读取时是否已经初始化失败过，防止LOG任务反复等待超时。 */
@@ -152,197 +136,64 @@ static void d_rtc_enable_backup_access(void)
     PWR_BackupAccessEnable(ENABLE);                                               /* 允许软件写RTC/备份域寄存器。 */
 }
 
-/* 启动内部低速时钟LSI，当前硬件没有外部RTC晶振，所以RTC时钟固定使用LSI。 */
-static bool d_rtc_enable_lsi_clock(void)
+/* 从已选的其它RTC时钟源切换到LSE前，必须复位备份域。 */
+static void d_rtc_prepare_clock_source(void)
 {
-    uint32_t u32TimeoutCount = D_RTC_LSI_READY_TIMEOUT; /* 设置等待LSI就绪的最大循环次数。 */
+    uint32_t rtc_sel = (RCC->BDCTRL & RCC_BDCTRL_RTCSEL);
 
-    RCC_EnableLsi(ENABLE); /* 打开LSI内部低速时钟。 */
-    while ((RCC_GetFlagStatus(RCC_FLAG_LSIRD) == RESET) && (u32TimeoutCount > 0UL)) /* 等待LSI ready标志置位。 */
+    if ((rtc_sel != RCC_BDCTRL_RTCSEL_NOCLOCK) && (rtc_sel != RCC_BDCTRL_RTCSEL_LSE))
     {
-        u32TimeoutCount--; /* 每循环一次减少一次等待次数，防止硬件异常时卡死。 */
+        RCC_EnableBackupReset(ENABLE);  /* 旧时钟源及旧日历/校时标记一并清除。 */
+        RCC_EnableBackupReset(DISABLE);
     }
-
-    return (RCC_GetFlagStatus(RCC_FLAG_LSIRD) != RESET);
 }
 
-/* 选择RTC时钟源；如果曾经选过外部源，需要复位备份域后才能重新选择LSI。 */
+/* 已起振的LSE保持运行，避免每次复位MCU时停振影响RTC走时。 */
+static bool d_rtc_enable_lse_clock(void)
+{
+    uint32_t start_ms;
+
+    if (RCC_GetFlagStatus(RCC_FLAG_LSERD) != RESET)
+    {
+        return true;
+    }
+
+    RCC_ConfigLse(RCC_LSE_ENABLE);
+    start_ms = d_timer_get_ms();
+    while (RCC_GetFlagStatus(RCC_FLAG_LSERD) == RESET)
+    {
+        if ((uint32_t)(d_timer_get_ms() - start_ms) >= D_RTC_LSE_READY_TIMEOUT_MS)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/* 晶振就绪后选择LSE作为RTC时钟源。 */
 static bool d_rtc_select_clock_source(void)
 {
     uint32_t rtc_sel = (RCC->BDCTRL & RCC_BDCTRL_RTCSEL); /* 读取当前RTC时钟源选择位。 */
 
-    if (rtc_sel == RCC_BDCTRL_RTCSEL_LSI) /* 已经是LSI时不重复配置。 */
+    if (rtc_sel == RCC_BDCTRL_RTCSEL_LSE) /* 已经是LSE时不重复配置。 */
     {
         return true;                      /* 当前时钟源正确。 */
     }
 
-    if (rtc_sel != RCC_BDCTRL_RTCSEL_NOCLOCK) /* RTC时钟源不是空也不是LSI，说明曾经选过别的源。 */
-    {
-        RCC_EnableBackupReset(ENABLE);       /* 复位备份域，硬件才允许重新选择RTC时钟源。 */
-        RCC_EnableBackupReset(DISABLE);      /* 释放备份域复位。 */
-    }
-
-    RCC_ConfigRtcClk(RCC_RTCCLK_SRC_LSI); /* 把RTC时钟源切到内部LSI。 */
-    return ((RCC->BDCTRL & RCC_BDCTRL_RTCSEL) == RCC_BDCTRL_RTCSEL_LSI); /* 重新读取确认是否切换成功。 */
+    RCC_ConfigRtcClk(RCC_RTCCLK_SRC_LSE); /* 把RTC时钟源切到外部LSE。 */
+    return ((RCC->BDCTRL & RCC_BDCTRL_RTCSEL) == RCC_BDCTRL_RTCSEL_LSE); /* 重新读取确认是否切换成功。 */
 }
 
 /* 配置RTC日历分频和24小时制，分频值只影响走时速度，不会主动写日期和时间。 */
-/* 返回当前APB1定时器实际输入时钟，规则与d_timer保持一致。 */
-static uint32_t d_rtc_get_apb1_timer_clock(void)
-{
-    RCC_ClocksType clocks;
-
-    RCC_GetClocksFreqValue(&clocks);
-    if (clocks.Pclk1Freq == clocks.HclkFreq)
-    {
-        return clocks.Pclk1Freq;
-    }
-
-    return (clocks.Pclk1Freq * 2UL);
-}
-
-/*
- * 使用厂家提供的GPIO_RMP_TIM5CH4内部重映射测量LSI。
- * TIM5以系统时钟计数，TIM5_CH4捕获LSI上升沿，连续多个周期求平均，
- * 这样RTC不再依赖人工反推的固定53778Hz数值。
- */
-static bool d_rtc_measure_lsi(uint32_t *lsi_hz)
-{
-    TIM_TimeBaseInitType tim_base;
-    TIM_ICInitType tim_ic;
-    uint32_t u32TimerFrequencyHz;
-    uint32_t u32TimeoutCount;
-    uint32_t u32SampleIndex;
-    uint32_t u32CaptureSum;
-    uint32_t u32MeasuredFrequencyHz;
-    uint16_t u16PreviousCapture;
-    uint16_t u16CurrentCapture;
-    uint16_t u16CaptureDelta;
-    uint8_t bFirstCaptureReceived;
-    bool bMeasureSuccessful;
-
-    if (lsi_hz == 0)
-    {
-        return false;
-    }
-
-    u32TimerFrequencyHz = d_rtc_get_apb1_timer_clock();
-    gu32_d_rtc_lsi_timer_hz = u32TimerFrequencyHz;
-    if ((u32TimerFrequencyHz == 0UL) || (u32TimerFrequencyHz > 0xFFFFFFFFUL / D_RTC_LSI_CAPTURE_SAMPLES))
-    {
-        return false;
-    }
-
-    RCC_EnableAPB2PeriphClk(RCC_APB2_PERIPH_AFIO, ENABLE);
-    RCC_EnableAPB1PeriphClk(RCC_APB1_PERIPH_TIM5, ENABLE);
-    GPIO_ConfigPinRemap(GPIO_RMP_TIM5CH4, ENABLE);
-    TIM_DeInit(TIM5);
-
-    TIM_InitTimBaseStruct(&tim_base);
-    tim_base.Prescaler = 0U;
-    tim_base.Period = 0xFFFFU;
-    tim_base.CntMode = TIM_CNT_MODE_UP;
-    tim_base.ClkDiv = TIM_CLK_DIV1;
-    TIM_InitTimeBase(TIM5, &tim_base);
-
-    TIM_InitIcStruct(&tim_ic);
-    tim_ic.Channel = TIM_CH_4;
-    tim_ic.IcPolarity = TIM_IC_POLARITY_RISING;
-    tim_ic.IcSelection = TIM_IC_SELECTION_DIRECTTI;
-    tim_ic.IcPrescaler = TIM_IC_PSC_DIV1;
-    tim_ic.IcFilter = 0U;
-    TIM_ICInit(TIM5, &tim_ic);
-
-    TIM_SetCnt(TIM5, 0U);
-    TIM_ClearFlag(TIM5, TIM_FLAG_CC4);
-    TIM_Enable(TIM5, ENABLE);
-
-    u32CaptureSum = 0UL;
-    u16PreviousCapture = 0U;
-    bFirstCaptureReceived = 0U;
-    bMeasureSuccessful = false;
-
-    for (u32SampleIndex = 0UL; u32SampleIndex <= D_RTC_LSI_CAPTURE_SAMPLES; u32SampleIndex++)
-    {
-        u32TimeoutCount = D_RTC_LSI_CAPTURE_TIMEOUT;
-        while ((TIM_GetFlagStatus(TIM5, TIM_FLAG_CC4) == RESET) && (u32TimeoutCount > 0UL))
-        {
-            u32TimeoutCount--;
-        }
-
-        if (TIM_GetFlagStatus(TIM5, TIM_FLAG_CC4) == RESET)
-        {
-            break;
-        }
-
-        u16CurrentCapture = TIM_GetCap4(TIM5);
-        TIM_ClearFlag(TIM5, TIM_FLAG_CC4);
-        if (bFirstCaptureReceived != 0U)
-        {
-            u16CaptureDelta = (uint16_t)(u16CurrentCapture - u16PreviousCapture);
-            if (u16CaptureDelta == 0U)
-            {
-                break;
-            }
-            u32CaptureSum += (uint32_t)u16CaptureDelta;
-        }
-        else
-        {
-            bFirstCaptureReceived = 1U;
-        }
-        u16PreviousCapture = u16CurrentCapture;
-
-        if (u32SampleIndex == D_RTC_LSI_CAPTURE_SAMPLES)
-        {
-            u32MeasuredFrequencyHz = (u32TimerFrequencyHz * D_RTC_LSI_CAPTURE_SAMPLES + (u32CaptureSum / 2UL)) / u32CaptureSum;
-            if ((u32MeasuredFrequencyHz >= D_RTC_LSI_MIN_HZ) && (u32MeasuredFrequencyHz <= D_RTC_LSI_MAX_HZ))
-            {
-                *lsi_hz = u32MeasuredFrequencyHz;
-                bMeasureSuccessful = true;
-            }
-        }
-    }
-
-    TIM_Enable(TIM5, DISABLE);
-    TIM_DeInit(TIM5);
-    GPIO_ConfigPinRemap(GPIO_RMP_TIM5CH4, DISABLE);
-    return bMeasureSuccessful;
-}
-
-/* 测量LSI并计算同步分频值，RTC初始化时只执行一次。 */
-static uint32_t d_rtc_prepare_lsi(void)
-{
-    uint32_t lsi_hz;
-    uint32_t sync_div;
-
-    lsi_hz = D_RTC_LSI_FALLBACK_HZ;
-    gu32_d_rtc_lsi_hz = D_RTC_LSI_FALLBACK_HZ;
-    gu8_d_rtc_lsi_measure_ok = 0U;
-
-    if (d_rtc_measure_lsi(&lsi_hz))
-    {
-        gu32_d_rtc_lsi_hz = lsi_hz;
-        gu8_d_rtc_lsi_measure_ok = 1U;
-    }
-
-    sync_div = (lsi_hz + ((D_RTC_LSI_ASYNC_PREDIV + 1UL) / 2UL)) /
-               (D_RTC_LSI_ASYNC_PREDIV + 1UL);
-    if (sync_div == 0UL)
-    {
-        sync_div = 1UL;
-    }
-
-    return (sync_div - 1UL);
-}
-
 static bool d_rtc_config_calendar(void)
 {
     RTC_InitType rtc_init; /* 国民库RTC初始化结构体。 */
 
     RTC_StructInit(&rtc_init);                           /* 先填入库默认值，防止结构体字段未初始化。 */
     rtc_init.RTC_HourFormat = RTC_24HOUR_FORMAT;         /* 使用24小时制。 */
-    rtc_init.RTC_AsynchPrediv = D_RTC_LSI_ASYNC_PREDIV;  /* 设置异步分频。 */
-    rtc_init.RTC_SynchPrediv = D_RTC_LSI_SYNC_PREDIV;    /* 设置同步分频。 */
+    rtc_init.RTC_AsynchPrediv = D_RTC_LSE_ASYNC_PREDIV;  /* 32.768kHz先除以128。 */
+    rtc_init.RTC_SynchPrediv = D_RTC_LSE_SYNC_PREDIV;    /* 再除以256，得到1Hz。 */
 
     if (RTC_Init(&rtc_init) != SUCCESS) /* 写入RTC分频和小时制配置。 */
     {
@@ -357,15 +208,16 @@ bool d_rtc_init(void)
 {
     s_d_rtc_init_failed = 0U;        /* 主动初始化时先清掉失败标记，允许重新尝试。 */
     d_rtc_enable_backup_access();    /* 先打开备份域访问权限。 */
+    d_rtc_prepare_clock_source();    /* 旧RTC源不是LSE时复位备份域。 */
 
-    if (!d_rtc_enable_lsi_clock())   /* 启动LSI并等待就绪。 */
+    if (!d_rtc_enable_lse_clock())   /* 启动LSE并等待就绪。 */
     {
         s_d_rtc_inited = 0U;         /* 标记RTC本次没有初始化成功。 */
         s_d_rtc_init_failed = 1U;    /* 记录失败，普通读接口不再反复等待超时。 */
         return false;                /* 返回初始化失败。 */
     }
 
-    if (!d_rtc_select_clock_source()) /* 确认RTC时钟源已经切到LSI。 */
+    if (!d_rtc_select_clock_source()) /* 确认RTC时钟源已经切到LSE。 */
     {
         s_d_rtc_inited = 0U;          /* 标记RTC本次没有初始化成功。 */
         s_d_rtc_init_failed = 1U;     /* 记录失败。 */
@@ -436,7 +288,7 @@ bool d_rtc_read(d_rtc_time_t *time)
     {
         if (s_d_rtc_init_failed != 0U)  /* 普通读取曾经初始化失败过。 */
         {
-            return false;               /* 直接返回失败，避免SaveLog_Task反复等待LSI超时。 */
+            return false;               /* 直接返回失败，避免SaveLog_Task反复等待LSE超时。 */
         }
 
         if (!d_rtc_init())              /* 尝试自动初始化RTC。 */

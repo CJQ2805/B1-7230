@@ -11,7 +11,6 @@
 #include "Protocol/Comm/ducar_uart_protocol.h"
 
 #include "App/app_bms_fault.h"
-#include "App/app_current_calib.h"
 #include "App/app_flash_map.h"
 #include "App/app_param.h"
 #include "App/app_param_api.h"
@@ -653,11 +652,8 @@ static void ducar_iap_handle_update_start(const ducar_iap_frame_t *frame)
         return;
     }
 
-    if (!app_bms_soc_save_for_transition())
-    {
-        ducar_iap_send_status(DUCAR_IAP_CMD_UPDATE_START, DUCAR_IAP_NAK);
-        return;
-    }
+    /* 升级前尽力保存SOC；保存失败不阻断固件接收。 */
+    (void)app_bms_soc_save_for_transition();
     ducar_iap_reset_update_state();
     if (!ducar_iap_erase_app2())
     {
@@ -891,10 +887,8 @@ bool ducar_iap_prepare_boot_move(uint32_t image_size, uint32_t image_crc32)
         return false;
     }
 
-    if (!app_bms_soc_save_for_transition() || (app_bms_fault_save_shutdown_pf() == 0U))
-    {
-        return false;
-    }
+    (void)app_bms_soc_save_for_transition();
+    (void)app_bms_fault_save_shutdown_pf();
 
     if ((image_size < 8UL) || (image_size > APP_IAP_APP_CODE_SIZE))
     {
@@ -931,10 +925,8 @@ bool ducar_iap_prepare_boot_wait_package(void)
         return false;
     }
 
-    if (!app_bms_soc_save_for_transition() || (app_bms_fault_save_shutdown_pf() == 0U))
-    {
-        return false;
-    }
+    (void)app_bms_soc_save_for_transition();
+    (void)app_bms_fault_save_shutdown_pf();
 
     return ducar_iap_set_upgrade_flag(APP_IAP_UPGRADE_FLAG_WAIT_PACKAGE);
 }
@@ -1037,10 +1029,8 @@ void ducar_iap_protocol_task(void)
 
     if (s_ducar_iap_reset_pending != 0U)
     {
-        if (app_bms_soc_save_for_transition())
-        {
-            d_system_reset();
-        }
+        (void)app_bms_soc_save_for_transition();
+        d_system_reset();
         return;
     }
     ducar_iap_protocol_update_online_state();
@@ -1061,14 +1051,7 @@ void ducar_iap_protocol_task(void)
         {
             if (ducar_iap_is_protocol_cmd(tIapFrame.cmd))
             {
-                if (app_current_calib_cal2_is_active())
-                {
-                    ducar_iap_send_status(tIapFrame.cmd, DUCAR_IAP_NAK);
-                }
-                else
-                {
-                    ducar_iap_handle_frame(&tIapFrame);
-                }
+                ducar_iap_handle_frame(&tIapFrame);
             }
             else if (!ducar_iap_is_busy())
             {

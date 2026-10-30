@@ -126,7 +126,7 @@ int main(void)
             NVIC_SystemReset();
         }
     }
-    /* RTC使用内部低速时钟LSI，当前硬件没有外部RTC晶振，初始化失败时LOG会退回运行时间。 */
+    /* RTC使用外部32.768kHz LSE晶振，初始化失败时LOG会退回运行时间。 */
     d_rtc_init();
     app_mcu_ntc_init();
     app_input_signals_init();

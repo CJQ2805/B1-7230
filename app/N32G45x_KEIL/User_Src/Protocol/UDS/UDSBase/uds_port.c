@@ -69,6 +69,11 @@ void uds_request_reset_after_tx(void)
     s_uds_reset_after_tx = 1U;
 }
 
+bool uds_port_is_reset_pending(void)
+{
+    return (s_uds_reset_after_tx != 0U);
+}
+
 uint32_t uds_port_get_time_ms(void)
 {
     return d_timer_get_ms();
@@ -107,10 +112,9 @@ void uds_1ms_task(void)
         !app_can_iap_is_busy() &&
         d_can_is_tx_idle(&can0))
     {
-        if (app_bms_soc_save_for_transition())
-        {
-            s_uds_reset_after_tx = 0U;
-            d_system_reset();
-        }
+        /* 编程会话/镜像交接先尝试保存SOC，失败也不挂住升级复位。 */
+        (void)app_bms_soc_save_for_transition();
+        s_uds_reset_after_tx = 0U;
+        d_system_reset();
     }
 }

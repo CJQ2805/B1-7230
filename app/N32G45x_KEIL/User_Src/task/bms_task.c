@@ -106,6 +106,21 @@ static bool app_bms_soc_flash_save_internal(bool transition)
     memcpy(&saved_soc, &gt_app_soc, sizeof(saved_soc));
     taskEXIT_CRITICAL();
 
+    /* 欠压时对外容量已归零，真实积分仍可能因板级自耗电继续为负；
+     * 只修正落盘副本，不改变运行中积分状态，也不能因此阻断升级。 */
+    if (saved_soc.s32remain_cap < 0L)
+    {
+        saved_soc.s32remain_cap = 0L;
+    }
+    if (saved_soc.tsoc_capacity_data.s32display_cap_val < 0L)
+    {
+        saved_soc.tsoc_capacity_data.s32display_cap_val = 0L;
+    }
+    if (saved_soc.tsoc_capacity_data.s32real_cap_val < 0L)
+    {
+        saved_soc.tsoc_capacity_data.s32real_cap_val = 0L;
+    }
+
     if ((saved_soc.s32battery_full_cap <= 0L) ||
         (saved_soc.s32battery_full_cap > 1000000L) ||
         (saved_soc.s32remain_cap < 0L) ||

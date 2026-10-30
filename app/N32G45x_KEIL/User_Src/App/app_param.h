@@ -18,7 +18,7 @@
 /* 额定容量   mAh*/
 #define APP_PARAM_BAT_CAPACITY         30000   //30Ah
 /* 最大允许充电电压，单位mV；当前20S电池包配置为85.6V。 */
-#define APP_PARAM_MAX_CHARGE_VOLTAGE_MV 85600U
+#define APP_PARAM_MAX_CHARGE_VOLTAGE_MV 85000U
 
 /* 宗申B1主动通信：KEY缺失时，电流归零达到该时间后停止发送，单位ms。 */
 #define APP_PARAM_ZS_B1_TX_IDLE_TIMEOUT_MS (1UL * 60UL * 1000UL)
@@ -41,10 +41,10 @@
  * 出包T版本：
  * 打包文件名使用，显示时带T前缀，用于临时调试版本，不进行生产只迭代小版本，生产时大版本V+1的情况下，小版本必须置1，例如T1,最小单位为1。 */
 /* 升级包T版本字符串，用于生成升级文件名。 */
-#define APP_PARAM_PACKAGE_T_VERSION "T15"
+#define APP_PARAM_PACKAGE_T_VERSION "T18"
 
 /* DUCAR CAN通信协议版本：A0.9=0x09，F200的Data3返回此标识。 */
-#define APP_PARAM_CAN_PROTOCOL_VERSION 0xBU
+#define APP_PARAM_CAN_PROTOCOL_VERSION 0xCU
 
 /*
  * BMS硬件拓扑配置：
@@ -83,7 +83,7 @@
 #define APP_BALANCE_ENABLE              1U
 #if (APP_BALANCE_ENABLE != 0U)
 /* 均衡启动压差阈值，单位mV；单体最大压差达到该值才允许启动均衡。 */
-#define APP_BALANCE_START_DIFF_MV       30U
+#define APP_BALANCE_START_DIFF_MV       50U
 /* 均衡停止压差阈值，单位mV；压差降到该值及以下时停止均衡。 */
 #define APP_BALANCE_STOP_DIFF_MV        10U
 /* 允许均衡的最低单体电压，单位mV；最低单体电压必须高于该值。 */

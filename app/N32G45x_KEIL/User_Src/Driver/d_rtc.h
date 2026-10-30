@@ -18,11 +18,7 @@ typedef struct
     uint8_t sec;    /* 秒，范围0~59。 */
 } d_rtc_time_t;
 
-extern volatile uint32_t gu32_d_rtc_lsi_hz; /* RTC初始化时实际测得的LSI频率，供仿真观察。 */
-extern volatile uint32_t gu32_d_rtc_lsi_timer_hz; /* 测量LSI时使用的TIM5计数频率，供仿真观察。 */
-extern volatile uint8_t gu8_d_rtc_lsi_measure_ok; /* 1表示测量成功，0表示使用40kHz保底值。 */
-
-bool d_rtc_init(void);                    /* 初始化RTC硬件，当前使用内部LSI，不使用外部RTC晶振。 */
+bool d_rtc_init(void);                    /* 初始化RTC硬件，使用32.768kHz外部LSE晶振。 */
 bool d_rtc_write(const d_rtc_time_t *time); /* 写入真实年月日时分秒，成功后RTC时间才会被标记为有效。 */
 bool d_rtc_read(d_rtc_time_t *time);      /* 读取RTC真实时间；没有写过有效时间时返回false。 */
 bool d_rtc_read_calendar(d_rtc_time_t *time); /* 读取RTC当前日历，不检查“已校时”备份标志。 */

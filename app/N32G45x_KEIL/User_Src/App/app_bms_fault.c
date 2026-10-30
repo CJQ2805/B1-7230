@@ -422,7 +422,7 @@ static void bms_fault_update_afe_fault(const bms_fault_data_t *data)
                            data->afe_iic_watchdog ||
                            data->afe_ntc_iic_fault);
 
-    /* AFE_fault 置位：AFE数据未齐、IIC看门狗报警或NTC寄存器读取失败持续3s。 */
+    /* AFE_fault 置位：AFE数据未齐、IIC看门狗报警或NTC寄存器读取失败连续持续10s。 */
     BMS_DELAY_SET(afe_fault_condition,
                   dly_set_afe_fault,
                   AFE_FAULT_SET_TIME,
@@ -743,8 +743,8 @@ static void bms_fault_update_voltage_faults(const bms_fault_data_t *data)
 #endif
 
 #if (BMS_PROTECT_CELL_OV_WARN_ENABLE != 0U)
-    /* cell_war_cov 置位：最高单体电压达到或超过一级过压告警阈值。 */
-    BMS_DELAY_SET(data->max_cell_mv >= COV_SET_WAR_VOLTAGE,
+    /* cell_war_cov 置位：充电时最高单体电压达到或超过一级过压告警阈值。 */
+    BMS_DELAY_SET(data->charging && (data->max_cell_mv >= COV_SET_WAR_VOLTAGE),
                   dly_cov_war_set,
                   COV_SET_WAR_TIME,
                   gt_app_bms_fault.tbms_sw_fault_flag.ucharge_fault_A.tcharge_fault_A.b1cell_war_cov);
@@ -756,8 +756,8 @@ static void bms_fault_update_voltage_faults(const bms_fault_data_t *data)
 #endif
 
 #if (BMS_PROTECT_CELL_OV_PRO_ENABLE != 0U)
-    /* cell_pro_cov 置位：最高单体电压达到或超过一级过压保护阈值。 */
-    BMS_DELAY_SET(data->max_cell_mv >= COV_SET_PRO_VOLTAGE,
+    /* cell_pro_cov 置位：充电时最高单体电压达到或超过一级过压保护阈值。 */
+    BMS_DELAY_SET(data->charging && (data->max_cell_mv >= COV_SET_PRO_VOLTAGE),
                   dly_cov_pro_set,
                   COV_SET_PRO_TIME,
                   gt_app_bms_fault.tbms_sw_fault_flag.ucharge_fault_A.tcharge_fault_A.b1cell_pro_cov);
@@ -795,8 +795,8 @@ static void bms_fault_update_voltage_faults(const bms_fault_data_t *data)
 #endif
 
 #if (BMS_PROTECT_PACK_OV_PRO_ENABLE != 0U)
-    /* pack_pro_pov 置位：总压达到或超过单体一级过压保护阈值乘串数。 */
-    BMS_DELAY_SET(data->pack_voltage_mv >= pack_ov_pro_mv,
+    /* pack_pro_pov 置位：充电时总压达到或超过单体一级过压保护阈值乘串数。 */
+    BMS_DELAY_SET(data->charging && (data->pack_voltage_mv >= pack_ov_pro_mv),
                   dly_pov_pro_set,
                   COV_SET_PRO_TIME,
                   gt_app_bms_fault.tbms_sw_fault_flag.ucharge_fault_B.tcharge_fault_B.b1pack_pro_pov);
@@ -808,8 +808,8 @@ static void bms_fault_update_voltage_faults(const bms_fault_data_t *data)
 #endif
 
 #if (BMS_PROTECT_CELL_UV_WARN_ENABLE != 0U)
-    /* cell_war_cuv 置位：最低单体电压达到或低于一级欠压告警阈值。 */
-    BMS_DELAY_SET(data->min_cell_mv <= CUV_SET_WAR_VOLTAGE,
+    /* cell_war_cuv 置位：放电时最低单体电压达到或低于一级欠压告警阈值。 */
+    BMS_DELAY_SET(data->discharging && (data->min_cell_mv <= CUV_SET_WAR_VOLTAGE),
                   dly_cuv_war_set,
                   CUV_SET_WAR_TIME,
                   gt_app_bms_fault.tbms_sw_fault_flag.udischarge_fault_A.tdischarge_fault_A.b1cell_war_cuv);
@@ -821,8 +821,8 @@ static void bms_fault_update_voltage_faults(const bms_fault_data_t *data)
 #endif
 
 #if (BMS_PROTECT_CELL_UV1_PRO_ENABLE != 0U)
-    /* CUV1：最低单体达到或低于当前温度档的一级欠压阈值后置位。 */
-    BMS_DELAY_SET(data->min_cell_mv <= cuv1_set_pro_voltage_mv,
+    /* CUV1：放电时最低单体达到或低于当前温度档的一级欠压阈值后置位。 */
+    BMS_DELAY_SET(data->discharging && (data->min_cell_mv <= cuv1_set_pro_voltage_mv),
                   dly_cuv1_pro_set,
                   CUV1_SET_PRO_TIME,
                   gt_app_bms_fault.tbms_sw_fault_flag.udischarge_fault_A.tdischarge_fault_A.b1cell_pro_cuv1);
@@ -835,7 +835,7 @@ static void bms_fault_update_voltage_faults(const bms_fault_data_t *data)
 
 #if (BMS_PROTECT_CELL_UV2_PRO_ENABLE != 0U)
     /* CUV2：独立于CUV1置位二级欠压故障。 */
-    BMS_DELAY_SET(data->min_cell_mv <= CUV2_SET_PRO_VOLTAGE,
+    BMS_DELAY_SET(data->discharging && (data->min_cell_mv <= CUV2_SET_PRO_VOLTAGE),
                   dly_cuv2_pro_set,
                   CUV2_SET_PRO_TIME,
                   gt_app_bms_fault.tbms_sw_fault_flag.udischarge_fault_A.tdischarge_fault_A.b1cell_pro_cuv2);
@@ -855,8 +855,8 @@ static void bms_fault_update_voltage_faults(const bms_fault_data_t *data)
 #endif
 
 #if (BMS_PROTECT_PACK_UV_WARN_ENABLE != 0U)
-    /* pack_war_cuv 置位：总压达到或低于单体一级欠压告警阈值乘串数。 */
-    BMS_DELAY_SET(data->pack_voltage_mv <= pack_uv_war_mv,
+    /* pack_war_cuv 置位：放电时总压达到或低于单体一级欠压告警阈值乘串数。 */
+    BMS_DELAY_SET(data->discharging && (data->pack_voltage_mv <= pack_uv_war_mv),
                   dly_puv_war_set,
                   CUV_SET_WAR_TIME,
                   gt_app_bms_fault.tbms_sw_fault_flag.udischarge_fault_B.tdischarge_fault_B.b1pack_war_cuv);
@@ -868,8 +868,8 @@ static void bms_fault_update_voltage_faults(const bms_fault_data_t *data)
 #endif
 
 #if (BMS_PROTECT_PACK_UV_PRO_ENABLE != 0U)
-    /* pack_pro_cuv 置位：总压达到或低于单体二级欠压保护阈值乘串数。 */
-    BMS_DELAY_SET(data->pack_voltage_mv <= pack_uv_pro_mv,
+    /* pack_pro_cuv 置位：放电时总压达到或低于单体二级欠压保护阈值乘串数。 */
+    BMS_DELAY_SET(data->discharging && (data->pack_voltage_mv <= pack_uv_pro_mv),
                   dly_puv_pro_set,
                   CUV2_SET_PRO_TIME,
                   gt_app_bms_fault.tbms_sw_fault_flag.udischarge_fault_B.tdischarge_fault_B.b1pack_pro_cuv);
@@ -1749,6 +1749,10 @@ void app_bms_fault_update_afe(void)
            &gt_app_bms_fault.tbms_sw_fault_flag,
            sizeof(gt_app_bms_fault.tbms_fault_flag));
 
+    /* SOC确认满充后同步满充保护位；下方充电保护汇总据此断开充电MOS。 */
+    gt_app_bms_fault.tbms_fault_flag.ucharge_fault_A.tcharge_fault_A.b1full_charge_flag =
+        (snapshot.soc.u8soc_fcc_flag != 0U) ? 1U : 0U;
+
     /* cell_pro_cov 最终标志：软件单体过压保护或 AFE CHGOV 硬件过压保护任一触发。 */
     gt_app_bms_fault.tbms_fault_flag.ucharge_fault_A.tcharge_fault_A.b1cell_pro_cov =
         gt_app_bms_fault.tbms_sw_fault_flag.ucharge_fault_A.tcharge_fault_A.b1cell_pro_cov ||
@@ -1791,10 +1795,9 @@ void app_bms_fault_update_afe(void)
         gt_app_bms_fault.tbms_sw_fault_flag.udischarge_fault_B.tdischarge_fault_B.b1pack_shrot ||
         snapshot.afe_fault.short_circuit;
 
-    /* AFE_fault 最终标志：软件 AFE 通信/数据异常或 AFE IICWDGERR 硬件标志任一触发。 */
+    /* AFE_fault 对外标志统一采用软件连续异常判定，IICWDGERR也经过10s延时后再上报。 */
     gt_app_bms_fault.tbms_fault_flag.ugeneral_fault_A.tgeneral_fault_A.b1AFE_fault =
-        gt_app_bms_fault.tbms_sw_fault_flag.ugeneral_fault_A.tgeneral_fault_A.b1AFE_fault ||
-        snapshot.afe_fault.iic_watchdog;
+        gt_app_bms_fault.tbms_sw_fault_flag.ugeneral_fault_A.tgeneral_fault_A.b1AFE_fault;
 }
 
 static void bms_fault_update_status(void)

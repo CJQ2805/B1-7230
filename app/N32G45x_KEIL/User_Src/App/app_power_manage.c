@@ -6,6 +6,7 @@
 #include "task.h"
 
 #include "App/app_bms_snapshot.h"
+#include "App/app_can.h"
 #include "App/app_h_power_manage.h"
 #include "App/app_log_manage.h"
 #include "App/app_low_power_manage.h"
@@ -14,6 +15,8 @@
 #include "Driver/d_system.h"
 #include "Driver/d_timer.h"
 #include "HSI_afe/hsi_afe.h"
+#include "Protocol/IAP/ducar_uart_iap_protocol.h"
+#include "Protocol/UDS/UDSBase/uds_port.h"
 #include "RTT/SEGGER_RTT.h"
 #include "task/bms_task.h"
 
@@ -122,6 +125,12 @@ void app_power_manage_task(void)
         {
             s_app_power_request_log_pending = 0U;
         }
+    }
+
+    /* 升级已开始时暂缓自动关机；保护MOS仍由BMS故障逻辑控制。 */
+    if (app_can_iap_is_busy() || ducar_iap_is_busy() || uds_port_is_reset_pending())
+    {
+        return;
     }
 
     switch (s_app_power_state)

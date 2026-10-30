@@ -869,9 +869,7 @@ static void ducar_bms_reply_status(uint8_t cmd)
 
     if ((ptSnapshot != 0) && (ptSnapshot->ntc_abnormal_count >= BMS_NTC_FAULT_MIN_COUNT)) { au8ResponseData[5] |= 0x20U; } /* NTC-Fault：至少两路NTC电气异常。 */
     if ((ptSnapshot != 0) && (ptSnapshot->ntc_abnormal_count == 1U)) { au8ResponseData[5] |= 0x10U; } /* NTC-Warning：仅一路NTC电气异常，不执行保护。 */
-    if ((ptFault->ugeneral_fault_A.tgeneral_fault_A.b1AFE_fault != 0U) ||
-        ((ptSnapshot != 0) && ((ptSnapshot->afe_fault.iic_watchdog != 0U) ||
-                               (ptSnapshot->afe_fault.ntc_iic_fault != 0U)))) { au8ResponseData[5] |= 0x08U; } /* AFE-Fail：只表示AFE数据链路或通信异常。 */
+    if (ptFault->ugeneral_fault_A.tgeneral_fault_A.b1AFE_fault != 0U) { au8ResponseData[5] |= 0x08U; } /* AFE-Fail：与AFE故障位共用连续10s异常判定。 */
     if (ptFault->ugeneral_fault_A.tgeneral_fault_A.b1DSG_MOS_faulure != 0U) { au8ResponseData[5] |= 0x04U; } /* DsgMOS-Fail：放电MOS失效。 */
     if (ptFault->ugeneral_fault_A.tgeneral_fault_A.b1CHG_MOS_failure != 0U) { au8ResponseData[5] |= 0x02U; } /* ChgMOS-Fail：充电MOS失效。 */
 

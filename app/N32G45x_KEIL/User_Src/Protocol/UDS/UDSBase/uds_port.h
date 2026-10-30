@@ -10,6 +10,7 @@
 #define _UDS_PORT_H_
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "Protocol/Comm/ducar_can_protocol.h"
 
 #define FRAME_SIZE      8               // 帧长度
@@ -74,6 +75,9 @@ void uds_1ms_task(void);
 
 /* 在11 01肯定响应提交后，请求1ms任务等待CAN发送邮箱空闲再复位。 */
 void uds_request_reset_after_tx(void);
+
+/* 编程会话或镜像交接的肯定响应已提交，正在等待复位。 */
+bool uds_port_is_reset_pending(void);
 
 /* 平台适配层毫秒计时；供安全访问随机种子使用。 */
 uint32_t uds_port_get_time_ms(void);

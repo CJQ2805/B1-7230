@@ -34,6 +34,7 @@ bool d_can_send(d_can_t *c, uint32_t id, d_can_id_t kind, const uint8_t *d, uint
     return true;
 }
 bool d_can_is_tx_idle(d_can_t *c) { (void)c; return tx_idle; }
+void d_can_set_iap_silence(bool enabled) { (void)enabled; }
 void app_bms_snapshot_read(app_bms_snapshot_t *s) { *s = sample; }
 void app_bms_fault_snapshot_read(struct _app_bms_fault_t *s) { *s = fault_sample; }
 const char *app_param_get_package_v_version(void) { return version_v; }
@@ -67,7 +68,9 @@ uint8_t app_current_calib_cal2_request(uint8_t op, uint8_t seq, uint16_t session
 bool ducar_iap_is_busy(void) { return false; }
 bool ducar_can_iap_protocol_is_busy(void) { return false; }
 bool d_rtc_read(d_rtc_time_t *t) { memset(t,0,sizeof(*t)); t->year=2026; t->month=10; t->day=12; return true; }
+bool d_rtc_read_calendar(d_rtc_time_t *t) { return d_rtc_read(t); }
 bool d_rtc_write(const d_rtc_time_t *t) { (void)t; return true; }
+uint16_t app_charge_time_get_minutes(void) { return 0U; }
 void d_system_reset(void) { reset_count++; }
 uint8_t app_bms_fault_save_shutdown_pf(void) { return 1; }
 uint8_t app_bms_fault_clear_shutdown_pf(void) { return 1; }
@@ -76,13 +79,16 @@ uint8_t app_hw_apply_clear_all_afe_fault(void) { return 1; }
 void app_hw_apply_dcdc_enable(uint8_t e) { (void)e; }
 app_result_t app_h_power_manage_set_remote_mos_command(uint8_t m, app_mos_cmd_t c, uint8_t d)
 { (void)m; (void)c; (void)d; return APP_RESULT_OK; }
-void app_bms_force_soc_ocv(void) {}
+bool app_bms_force_soc_ocv(void) { return true; }
 app_result_t app_power_manage_request_shutdown(void) { return APP_RESULT_OK; }
 uint8_t app_bms_soc_ocv_pending(void) { return ocv_pending; }
 bool app_bms_soc_write_request(uint8_t s)
 { requested_soc=s; soc_request_count++; soc_status=APP_BMS_SOC_WRITE_SUCCESS; return true; }
 uint8_t app_bms_soc_write_status(void) { return soc_status; }
 void app_bms_soc_write_complete(void) { soc_status=APP_BMS_SOC_WRITE_IDLE; }
+bool app_bms_soc_save_for_transition(void) { return true; }
+uint8_t app_bms_soc_ocv_save_status(void) { return APP_BMS_SOC_OCV_SAVED; }
+void app_bms_soc_ocv_complete(void) {}
 uint32_t app_balance_get_mask(void) { return balance_mask; }
 
 static void fresh(void)
@@ -477,18 +483,23 @@ static void test_f21f_overcurrent_lock_bits(void)
     ducar_can_send_f21f();
     CHECK(frames[0].u32id==0x18F21F16);
     CHECK(frames[0].au8data[4]==0);
-    CHECK(frames[0].au8data[5]==0x0C && frames[0].au8data[6]==0 && frames[0].au8data[7]==0);
+    CHECK(frames[0].au8data[5]==0 && frames[0].au8data[6]==0x0C && frames[0].au8data[7]==0);
 
     /* Assert each source independently so swapped BIT2/BIT3 wiring is detected. */
     fresh();
     sample.fault.active.detail.ucharge_fault_B.tcharge_fault_B.b1pack_occ_lock=1;
     ducar_can_send_f21f();
-    CHECK(frames[0].au8data[5]==0x04);
+    CHECK(frames[0].au8data[5]==0 && frames[0].au8data[6]==0x04);
 
     fresh();
     sample.fault.active.detail.udischarge_fault_A.tdischarge_fault_A.b1pack_ocd_lock=1;
     ducar_can_send_f21f();
-    CHECK(frames[0].au8data[5]==0x08);
+    CHECK(frames[0].au8data[5]==0 && frames[0].au8data[6]==0x08);
+
+    fresh();
+    sample.fault.active.detail.ucharge_fault_A.tcharge_fault_A.b1full_charge_flag=1;
+    ducar_can_send_f21f();
+    CHECK(frames[0].au8data[5]==1 && frames[0].au8data[6]==0);
 }
 static void test_e200_single_byte_soc(void)
 {
@@ -558,8 +569,14 @@ static void test_cal2_wire_contract(void)
     CHECK(cal2_fake_request_count==0 && frame_count==1);
     CHECK(frames[0].au8data[1]==0xFF && frames[0].au8data[6]==0 && frames[0].au8data[7]==0xE7);
 }
-int main(void)
+int main(int argc, char **argv)
 {
+    /* Focused protocol check while older A0.7 fixtures are being updated. */
+    if ((argc == 2) && (strcmp(argv[1], "f21f") == 0))
+    {
+        test_f21f_overcurrent_lock_bits();
+        return failures ? 1 : 0;
+    }
     test_version_layout(); test_large_minor_version(); test_f216_a05_layout();
     test_f221_balance_mask_layout(); test_f220_controller_uv_and_voltage_event_counts(); test_periods();
     test_heartbeat_window_and_life_value(); test_unmapped_inputs_and_peak_invalid();

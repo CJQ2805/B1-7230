@@ -15,7 +15,6 @@
 
 #include "Driver/d_can.h"
 #include "App/app_param.h"
-#include "App/app_current_calib.h"
 #include "App/app_bms_obc.h"
 #include "App/app_input_signals.h"
 #include "Protocol/Comm/ducar_can_protocol.h"
@@ -153,24 +152,18 @@ void CAN_ReceiveTask(void)
         }
         else if (eCanIdType == APP_CAN_ID_DUCAR_IAP)
         {
-            if (!app_current_calib_cal2_is_active())
+            ducar_can_iap_protocol_receive(&tCanPacket);
+            if (ducar_can_iap_protocol_is_busy())
             {
-                ducar_can_iap_protocol_receive(&tCanPacket);
-                if (ducar_can_iap_protocol_is_busy())
-                {
-                    /* 收到升级启动帧即静默普通CAN，不等待后续发送调度周期。 */
-                    ducar_can_protocol_set_iap_silence(true);
-                }
+                /* 收到升级启动帧即静默普通CAN，不等待后续发送调度周期。 */
+                ducar_can_protocol_set_iap_silence(true);
             }
         }
         else if (eCanIdType == APP_CAN_ID_UDS)
         {
 #if (APP_PARAM_UDS_ENABLE == 1U)
-            /* 仅将已分类的标准帧交给UDS传输层。 */
-            if (!app_current_calib_cal2_is_active())
-            {
-                uds_recv_frame(tCanPacket.u32id, tCanPacket.au8data, tCanPacket.u8len);
-            }
+            /* 升级请求优先于校准会话，仅将已分类的标准帧交给UDS传输层。 */
+            uds_recv_frame(tCanPacket.u32id, tCanPacket.au8data, tCanPacket.u8len);
 #endif
         }
         else

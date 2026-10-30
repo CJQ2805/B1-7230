@@ -72,15 +72,15 @@ FCC判断阈值 CV模式
 The FCC determines the threshold
 */
 #define SOC_FCC_ACCELERATE_CONDITION			(((s32current > S0C_FCC_SET_STOP_CURRENT_MIN)&& (s32current < SOC_FCC_SET_STOP_CURRENT_MAX) && (u32cell_arv_volt > SOC_FCC_SET_MIN_CELL_VOLTAGE)) )
-#define SOC_FCC_SET_MIN_CELL_VOLTAGE            4000                 //mV   FCC的阈值电压，达到该电压和小于该电流时，持续该时间达满充
-#define SOC_FCC_SET_STOP_CURRENT_MAX		    500                  //mA   FCC的阈值电流，达到该电压和小于该电流时，持续该时间达满充
+#define SOC_FCC_SET_MIN_CELL_VOLTAGE            4050                 //mV   FCC的阈值电压，达到该电压和小于该电流时，持续该时间达满充
+#define SOC_FCC_SET_STOP_CURRENT_MAX		    1000                 //mA   FCC的阈值电流，达到该电压和小于该电流时，持续该时间达满充
 #define S0C_FCC_SET_STOP_CURRENT_MIN            80		             //mA   FCC电流下限值，认为有充电的值。
 /******************************************CV充电模式参数设置***********************************************************/
 /*
 FCC解除判断阈值
 FCC release judgment threshold
 */
-#define SOC_FCC_RESET_MIN_CELL_VOLTAGE          3900                 //mV   FCC电压如果达到该值时，持续该时间，解除FCC
+#define SOC_FCC_RESET_MIN_CELL_VOLTAGE          4000                 //mV   FCC电压如果达到该值时，持续该时间，解除FCC
 #define SOC_FCC_RESET_CURRENT     		        -500                 //mA   有该大小放电电流，持续该时间，解除FCC
 #define SOC_FCC_RESET_DELAY_TIME                1                    //S    持续时间
 

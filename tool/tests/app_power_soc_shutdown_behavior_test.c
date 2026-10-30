@@ -9,10 +9,15 @@ void app_power_manage_task(void);
 static uint32_t now_ms;
 static unsigned save_attempts, shutdown_attempts, reset_count;
 static bool save_succeeds, afe_succeeds = true;
+static bool upgrade_busy, uart_upgrade_busy, uds_upgrade_reset_pending;
+static uint8_t poweroff_override;
 static uint32_t live_soc[4], saved_soc[4];
 hsi_afe_t gt_hsi_afe;
 void app_low_power_set_shutdown_inhibit(uint8_t v) { (void)v; }
-void app_h_power_manage_set_poweroff_override(uint8_t v) { (void)v; }
+void app_h_power_manage_set_poweroff_override(uint8_t v) { poweroff_override = v; }
+bool app_can_iap_is_busy(void) { return upgrade_busy; }
+bool ducar_iap_is_busy(void) { return uart_upgrade_busy; }
+bool uds_port_is_reset_pending(void) { return uds_upgrade_reset_pending; }
 void app_bms_snapshot_read(app_bms_snapshot_t *p) { memset(p, 0, sizeof(*p)); p->afe_status_valid = 1; }
 bool app_log_request_snapshot(log_trigger_t t) { (void)t; return true; }
 app_log_flush_status_t app_log_get_flush_status(void) { return APP_LOG_FLUSH_COMPLETE; }
@@ -30,7 +35,20 @@ int main(void)
     app_power_manage_init();
     assert(app_power_manage_request_shutdown() == APP_RESULT_OK);
     now_ms = 10000;
+    upgrade_busy = true;
+    app_power_manage_task(); /* an active upgrade defers automatic poweroff */
+    assert(poweroff_override == 0 && save_attempts == 0);
+    upgrade_busy = false;
+    uart_upgrade_busy = true;
+    app_power_manage_task();
+    assert(poweroff_override == 0 && save_attempts == 0);
+    uart_upgrade_busy = false;
+    uds_upgrade_reset_pending = true;
+    app_power_manage_task();
+    assert(poweroff_override == 0 && save_attempts == 0);
+    uds_upgrade_reset_pending = false;
     app_power_manage_task(); /* MOS off requested */
+    assert(poweroff_override == 1);
     app_power_manage_task(); /* MOS confirmed off */
     live_soc[0] = 47; live_soc[1] = 14099; live_soc[2] = 30000; live_soc[3] = 8765;
     app_power_manage_task(); /* failed SOC save */

@@ -7,6 +7,7 @@
 #include "App/app_bms_fault.c"
 
 static uint32_t s_test_now_ms;
+static app_bms_snapshot_t s_test_snapshot;
 
 static void unexpected_dependency(const char *name)
 {
@@ -14,10 +15,14 @@ static void unexpected_dependency(const char *name)
     abort();
 }
 
+uint32_t d_timer_get_ms(void) { return s_test_now_ms; }
+void app_input_signals_load_detect_rearm(void) { unexpected_dependency("app_input_signals_load_detect_rearm"); }
+int SEGGER_RTT_printf(unsigned buffer_index, const char *format, ...)
+{ (void)buffer_index; (void)format; unexpected_dependency("SEGGER_RTT_printf"); return 0; }
+
 void app_bms_snapshot_read(app_bms_snapshot_t *snapshot)
 {
-    (void)snapshot;
-    unexpected_dependency("app_bms_snapshot_read");
+    *snapshot = s_test_snapshot;
 }
 
 void app_hw_apply_load_detect_enable(uint8_t enable_level)
@@ -190,6 +195,26 @@ int main(void)
     CHECK(gt_app_bms_fault.tbms_sw_fault_flag.ucharge_fault_A.tcharge_fault_A.b1pack_pro_occ1 == 0U,
           "regenerative current must not also set normal charge overcurrent level 1");
 
-    puts("PASS: BMS charge status drives normal charge faults; regenerative current remains separate");
+    memset(&gt_app_bms_fault, 0, sizeof(gt_app_bms_fault));
+    memset(&s_test_snapshot, 0, sizeof(s_test_snapshot));
+    s_test_snapshot.soc.u8soc_fcc_flag = 1U;
+    app_bms_fault_update_afe();
+    bms_fault_update_status();
+    CHECK(gt_app_bms_fault.tbms_fault_flag.ucharge_fault_A.tcharge_fault_A.b1full_charge_flag == 1U,
+          "FCC must set the full-charge protection bit");
+    CHECK(gt_app_bms_fault.tbms_fault_stat.u8charge_pro_flag == 1U,
+          "FCC must forbid charge MOS through charge protection");
+    CHECK(gt_app_bms_fault.tbms_fault_stat.u8discharge_pro_flag == 0U,
+          "FCC must not forbid discharge MOS");
+
+    s_test_snapshot.soc.u8soc_fcc_flag = 0U;
+    app_bms_fault_update_afe();
+    bms_fault_update_status();
+    CHECK(gt_app_bms_fault.tbms_fault_flag.ucharge_fault_A.tcharge_fault_A.b1full_charge_flag == 0U,
+          "full-charge protection must clear when FCC clears");
+    CHECK(gt_app_bms_fault.tbms_fault_stat.u8charge_pro_flag == 0U,
+          "FCC charge-protection request must clear when FCC clears");
+
+    puts("PASS: charge faults and FCC protection");
     return 0;
 }

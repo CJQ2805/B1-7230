@@ -22,9 +22,6 @@ int main(void)
     assert(save_count == 0 && reset_count == 0); /* ACK is still in flight */
     tx_idle = true;
     uds_1ms_task();
-    assert(save_count == 1 && reset_count == 0); /* failed save blocks reset */
-    save_ok = true;
-    uds_1ms_task();
-    assert(save_count == 2 && reset_count == 1); /* retry succeeds before reset */
+    assert(save_count == 1 && reset_count == 1); /* upgrade reset proceeds after a failed SOC save */
     return 0;
 }

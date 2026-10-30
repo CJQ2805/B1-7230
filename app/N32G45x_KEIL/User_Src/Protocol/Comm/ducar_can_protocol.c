@@ -1079,7 +1079,7 @@ static void ducar_can_send_f21e(void)
                      D_CAN_ID_EXTENDED, d, sizeof(d));
 }
 
-/* F21F：环境、低SOC、AFE故障2、MOS、回馈保护及其他保护位。 */
+/* F21F：环境、低SOC、AFE故障2、MOS、回馈、满充及其他保护位。 */
 static void ducar_can_send_f21f(void)
 {
     app_bms_snapshot_t s;
@@ -1095,10 +1095,11 @@ static void ducar_can_send_f21f(void)
         d[3] |= DUCAR_CAN_F21F_DSG_MOS_FAIL_PROTECT;
     /* A0.6 Data4：回馈电流保护等级。 */
     d[4] = ((s.fault.active.detail.ucharge_fault_A.u16fault_A & DUCAR_CAN_CHG_FAULT_A_RECHARGE_OCC) != 0U) ? 1U : 0U;
-    /* Data5 BIT2：充电过流锁；BIT3：放电过流锁。 */
-    d[5] = ((s.fault.active.detail.ucharge_fault_B.tcharge_fault_B.b1pack_occ_lock != 0U) ? 0x04U : 0U) |
+    /* A1.2 Data5：满充保护，直接报告参与充电MOS禁止的最终故障位。 */
+    d[5] = (s.fault.active.detail.ucharge_fault_A.tcharge_fault_A.b1full_charge_flag != 0U) ? 1U : 0U;
+    /* A1.2 Data6~7：其他保护；BIT2充电过流锁、BIT3放电过流锁。 */
+    d[6] = ((s.fault.active.detail.ucharge_fault_B.tcharge_fault_B.b1pack_occ_lock != 0U) ? 0x04U : 0U) |
            ((s.fault.active.detail.udischarge_fault_A.tdischarge_fault_A.b1pack_ocd_lock != 0U) ? 0x08U : 0U);
-    /* Data5 BIT0/1当前无通信总线故障/地址冲突源；Data6~7保留为0。 */
     (void)d_can_send(&can0, ducar_can_build_bms_data_id(DUCAR_CAN_PGN_F21F),
                      D_CAN_ID_EXTENDED, d, sizeof(d));
 }
