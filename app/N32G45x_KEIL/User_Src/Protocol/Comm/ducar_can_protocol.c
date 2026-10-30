@@ -104,6 +104,7 @@ static uint32_t ducar_can_id_encode(uint8_t u8Pf, uint8_t u8Ps, uint8_t u8Sa);
 static uint16_t u16Can1msCount;
 static uint16_t u16DetdProactiveTxTicks;
 static uint16_t u16CanLifeValueTicks;
+static uint8_t u8CanF20fPending;
 static uint8_t u8CanLifeValue;
 static uint8_t u8DetdConnectedLast;
 static uint8_t u8CanBusSilent;
@@ -505,7 +506,7 @@ static void ducar_can_send_f20e(void)
 }
 
 /* F20F：发送单体1~4电压。 */
-static void ducar_can_send_f20f(void)
+static bool ducar_can_send_f20f(void)
 {
     app_bms_snapshot_t tBmsSnapshot;
     uint8_t au8CanData[DUCAR_CAN_DATA_DLC] = {0};
@@ -521,9 +522,9 @@ static void ducar_can_send_f20f(void)
     /* Data6~Data7对应第4串。 */
     ducar_can_write_u16_le(au8CanData, 6U, ducar_can_cell_voltage_mv(&tBmsSnapshot, 3U));
 
-    /* 发送F20F。 */
-    (void)d_can_send(&can0, ducar_can_build_bms_data_id(DUCAR_CAN_PGN_F20F),
-                     D_CAN_ID_EXTENDED, au8CanData, DUCAR_CAN_DATA_DLC);
+    /* 返回邮箱接收结果；邮箱满时由200ms任务保留并重试。 */
+    return d_can_send(&can0, ducar_can_build_bms_data_id(DUCAR_CAN_PGN_F20F),
+                      D_CAN_ID_EXTENDED, au8CanData, DUCAR_CAN_DATA_DLC);
 }
 
 /* F210：发送单体5~8电压。 */
@@ -1234,6 +1235,8 @@ void ducar_can_protocol_init(void)
     u16Can1msCount = 0U;
     /* 清空DETD触发的主动发送剩余时间。 */
     u16DetdProactiveTxTicks = 0U;
+    /* CAN重新初始化时清除F20F待发状态。 */
+    u8CanF20fPending = 0U;
     /* 清空LifeValue计时。 */
     u16CanLifeValueTicks = 0U;
     /* LifeValue从0开始递增。 */
@@ -1467,10 +1470,23 @@ void ducar_can_200ms_task(void)
 {
     /* 200ms槽依次错开发送F20F~F214单体电压报文。 */
     /* 200ms周期内按偏移依次发送6组单体电压。 */
+    if (u8CanF20fPending != 0U)
+    {
+        /* 邮箱暂满时每个1ms通信周期重试；成功后本周期不重复发送其它200ms帧。 */
+        if (ducar_can_send_f20f())
+        {
+            u8CanF20fPending = 0U;
+        }
+        return;
+    }
+
     if (((u16Can1msCount + 9U) % DUCAR_CAN_CYCLE_200MS) == 0U)
     {
         /* 发送F20F。 */
-        ducar_can_send_f20f();
+        if (!ducar_can_send_f20f())
+        {
+            u8CanF20fPending = 1U;
+        }
     }
     else if (((u16Can1msCount + 10U) % DUCAR_CAN_CYCLE_200MS) == 0U)
     {
