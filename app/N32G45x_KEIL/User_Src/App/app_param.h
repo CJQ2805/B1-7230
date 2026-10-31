@@ -41,7 +41,7 @@
  * 出包T版本：
  * 打包文件名使用，显示时带T前缀，用于临时调试版本，不进行生产只迭代小版本，生产时大版本V+1的情况下，小版本必须置1，例如T1,最小单位为1。 */
 /* 升级包T版本字符串，用于生成升级文件名。 */
-#define APP_PARAM_PACKAGE_T_VERSION "T18"
+#define APP_PARAM_PACKAGE_T_VERSION "T19"
 
 /* DUCAR CAN通信协议版本：A0.9=0x09，F200的Data3返回此标识。 */
 #define APP_PARAM_CAN_PROTOCOL_VERSION 0xCU
