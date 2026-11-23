@@ -22,7 +22,10 @@
 /* 初始化LD1~LD5显示输出，默认全部熄灭。 */
 void app_led_init(void);
 
-/* 10ms业务调用：充电状态显示动画；DETC在位未充电时SOC常亮。 */
+/* 10ms业务调用：故障码轮播优先，之后按充电/DETC/按键窗口显示SOC。 */
 void app_led_task(void);
+
+/* 故障码轮播或轮播后的8秒SOC显示期间返回1，低功耗须保持阻止。 */
+uint8_t app_led_holds_awake(void);
 
 #endif

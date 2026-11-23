@@ -13,6 +13,7 @@
 #include "App/app_param_api.h"
 #include "App/app_flash_map.h"
 #include "Driver/d_flash.h"
+#include "Protocol/IAP/ducar_can_iap_protocol.h"
 #include "Protocol/IAP/ducar_uart_iap_protocol.h"
 #include "uds_customer_profile.h"
 
@@ -291,6 +292,17 @@ void uds_upgrade_reset_state(void)
     s_fingerprint_written = FALSE;
     memset(s_driver_token, 0, sizeof(s_driver_token));
     uds_upgrade_clear_transfer();
+}
+
+/* UDS owns APP2 from its first erase until abort/reset or successful handoff. */
+bool_t uds_upgrade_app2_is_busy(void)
+{
+    return ((s_state == UDS_UPGRADE_STATE_APP_ERASED) ||
+            (s_state == UDS_UPGRADE_STATE_APP_RECEIVING) ||
+            (s_state == UDS_UPGRADE_STATE_APP_EXITED) ||
+            (s_state == UDS_UPGRADE_STATE_APP_BLOCK_VERIFIED) ||
+            (s_state == UDS_UPGRADE_STATE_DEPENDENCIES_VERIFIED) ||
+            (s_state == UDS_UPGRADE_STATE_HANDOFF)) ? TRUE : FALSE;
 }
 
 /* Persist the exact customer eight-byte fingerprint behind the 16-bit FP tag. */
@@ -576,6 +588,14 @@ uint8_t uds_upgrade_erase_application(uint32_t target_address,
             return UDS_UPGRADE_OK;
         }
         return validation;
+    }
+
+    /* APP2 is shared with UART/CAN IAP; never erase another active transfer. */
+    if (ducar_iap_is_busy() ||
+        ducar_can_iap_protocol_is_busy() ||
+        ducar_iap_is_boot_move_pending())
+    {
+        return (uint8_t)NRC_CONDITIONS_NOT_CORRECT;
     }
 
     first_page = APP_FLASH_MAP_APP2_START_ADDR +

@@ -79,7 +79,7 @@ static bool ducar_can_iap_queue_reply(uint8_t u8Status,
     return true;
 }
 
-/* 将缓存的E1 ACK/NAK发送到主机，并带上APP区域标识。 */
+/* 发送ID：0x18E8[目标地址][BMS地址]，默认0x18E83A16；E1 ACK/NAK。 */
 static bool ducar_can_iap_send_reply(void)
 {
     uint8_t au8CanData[DUCAR_CAN_IAP_DATA_DLC];
@@ -94,7 +94,7 @@ static bool ducar_can_iap_send_reply(void)
     return d_can_send(&can0,
                       ducar_can_iap_build_id(DUCAR_CAN_PF_ACK,
                                              u8CanIapReplyDestination,
-                                             DUCAR_CAN_BMS_A_ADDRESS),
+                                             g_ducar_can_bms_address),
                       D_CAN_ID_EXTENDED,
                       au8CanData,
                       DUCAR_CAN_IAP_DATA_DLC);
@@ -109,7 +109,7 @@ static void ducar_can_iap_receive_boot_control(const t_can_packet *ptCanPacket,
 
     if ((ptCanPacket->u8len != DUCAR_CAN_IAP_DATA_DLC) ||
         (u8SourceAddress != DUCAR_CAN_PC_ADDRESS) ||
-        (u8DestinationAddress != DUCAR_CAN_BMS_A_ADDRESS) ||
+        (u8DestinationAddress != g_ducar_can_bms_address) ||
         (eCanIapReplyState != DUCAR_CAN_IAP_REPLY_IDLE))
     {
         return;
@@ -187,7 +187,7 @@ bool ducar_can_iap_protocol_is_packet(const t_can_packet *ptCanPacket)
         ducar_can_iap_is_df00_control(ptCanPacket) &&
         (ptCanPacket->au8data[0] == DUCAR_CAN_IAP_TP_RTS) &&
         ((uint8_t)(ptCanPacket->u32id & 0xFFUL) == DUCAR_CAN_PC_ADDRESS) &&
-        ((uint8_t)((ptCanPacket->u32id >> 8U) & 0xFFUL) == DUCAR_CAN_BMS_A_ADDRESS))
+        ((uint8_t)((ptCanPacket->u32id >> 8U) & 0xFFUL) == g_ducar_can_bms_address))
     {
         return true;
     }
@@ -196,7 +196,7 @@ bool ducar_can_iap_protocol_is_packet(const t_can_packet *ptCanPacket)
             ((u8Pf == DUCAR_CAN_PF_TP_CM) ||
              (u8Pf == DUCAR_CAN_PF_TP_DT)) &&
             ((uint8_t)(ptCanPacket->u32id & 0xFFUL) == DUCAR_CAN_PC_ADDRESS) &&
-            ((uint8_t)((ptCanPacket->u32id >> 8U) & 0xFFUL) == DUCAR_CAN_BMS_A_ADDRESS));
+            ((uint8_t)((ptCanPacket->u32id >> 8U) & 0xFFUL) == g_ducar_can_bms_address));
 }
 
 /* 分发APP侧IAP报文，并记录DF00会话活动以便处理超时。 */

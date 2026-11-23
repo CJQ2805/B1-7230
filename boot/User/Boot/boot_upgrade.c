@@ -173,6 +173,17 @@ bool boot_upgrade_app1_ready_is_valid(void)
            (boot_crc32((const uint8_t *)BOOT_APP1_START_ADDR, image_size) == image_crc32);
 }
 
+/* CCCC只能继续保留在元数据、APP2向量表和APP2镜像CRC都有效时。 */
+bool boot_upgrade_pending_move_is_valid(void)
+{
+    uint32_t image_size;
+    uint32_t image_crc32;
+
+    return boot_upgrade_get_move_info(&image_size, &image_crc32) &&
+           boot_app_backup_is_valid() &&
+           (boot_crc32((const uint8_t *)BOOT_APP2_START_ADDR, image_size) == image_crc32);
+}
+
 static bool boot_upgrade_copy_one_page(uint32_t src_page_addr, uint32_t dst_page_addr)
 {
     uint32_t offset;
@@ -213,9 +224,8 @@ bool boot_upgrade_move_backup_to_app1(void)
     uint32_t copy_size;
     uint32_t offset;
 
-    if (!boot_upgrade_get_move_info(&image_size, &image_crc32) ||
-        !boot_app_backup_is_valid() ||
-        (boot_crc32((const uint8_t *)BOOT_APP2_START_ADDR, image_size) != image_crc32))
+    if (!boot_upgrade_pending_move_is_valid() ||
+        !boot_upgrade_get_move_info(&image_size, &image_crc32))
     {
         return false;
     }

@@ -1,12 +1,13 @@
 /*
  * 文件作用：DUCAR CAN普通协议实现。
  *
- * 本文件参考GD7627的组织方式：一个1ms基准计数器、明确的周期槽位、
+ * 本文件按本工程的周期发送结构组织：一个TIM6毫秒基准、明确的周期槽位、
  * 一个PGN对应一个组包发送函数。d_can只负责硬件和原始帧队列；
  * app_can负责协议入口分流；本文件负责普通DUCAR报文的组包、周期发送、
  * 请求应答、TP发送和普通控制命令处理。CAN IAP不在这里实现。
  */
 #include "Protocol/Comm/ducar_can_protocol.h"
+#include "Protocol/Comm/zs_b1_can_protocol.h"
 
 #include <string.h>
 
@@ -15,6 +16,7 @@
 #include "App/app_current_calib.h"
 #include "App/app_log_manage.h"
 #include "App/app_h_power_manage.h"
+#include "App/app_parallel_id.h"
 #include "App/app_power_manage.h"
 #include "App/app_hw_apply.h"
 #include "App/app_bms_status.h"
@@ -23,6 +25,7 @@
 #include "App/app_bms_snapshot.h"
 #include "App/app_charge_time.h"
 #include "Driver/d_rtc.h"
+#include "Driver/d_timer.h"
 #include "Driver/d_system.h"
 #include "Protocol/Comm/ducar_uart_protocol.h"
 #include "Protocol/IAP/ducar_uart_iap_protocol.h"
@@ -45,9 +48,9 @@
 #define DUCAR_CAN_F220_LOW_TEMP_ENTER_0P1C    ((int16_t)-10)
 #define DUCAR_CAN_F220_LOW_TEMP_EXIT_0P1C     ((int16_t)10)
 
-#define DUCAR_CAN_DETD_TX_WINDOW_TICKS        ((uint16_t)5000U)
+#define DUCAR_CAN_DETD_TX_WINDOW_MS           ((uint32_t)5000U)
 #define DUCAR_CAN_TP_MAX_DATA_LEN             ((uint8_t)60U)
-#define DUCAR_CAN_ACK_WAIT_MAX_TICKS          ((uint8_t)100U)
+#define DUCAR_CAN_ACK_WAIT_MAX_MS             ((uint32_t)100U)
 #define DUCAR_CAN_TP_RTS                      ((uint8_t)0x10U)
 #define DUCAR_CAN_TP_CTS                      ((uint8_t)0x11U)
 #define DUCAR_CAN_TP_EOM_ACK                  ((uint8_t)0x13U)
@@ -100,11 +103,25 @@
 
 static uint32_t ducar_can_id_encode(uint8_t u8Pf, uint8_t u8Ps, uint8_t u8Sa);
 
-/* 本工程只保留一个1ms节拍计数器，所有周期槽都由它派生。 */
-static uint16_t u16Can1msCount;
-static uint16_t u16DetdProactiveTxTicks;
-static uint16_t u16CanLifeValueTicks;
-static uint8_t u8CanF20fPending;
+/* 上电默认地址；后续可由通信分配机制更新，不随CAN协议重初始化复位。 */
+volatile uint8_t g_ducar_can_bms_address = DUCAR_CAN_BMS_A_ADDRESS;
+
+/* 所有周期槽和协议超时都由TIM6毫秒计数派生。 */
+static uint16_t u16CanTimePhaseMs;
+static uint32_t u32DetdProactiveTxMs;
+/* 并联功能启用且成品模式下，DETD或DETC在位时维持组间状态广播。 */
+static uint8_t u8ParallelPeriodicTxActive;
+static uint32_t u32CanLifeValueMs;
+static uint32_t u32CanActionWaitMs;
+static uint32_t u32CanSocOcvWaitMs;
+static uint32_t u32CanTpWaitMs;
+static uint32_t u32CanTpRxWaitMs;
+static uint32_t s_ducar_can_last_ms;
+static uint16_t u16Can100msDueMask;
+static uint8_t u8Can50msDue;
+static uint16_t u16Can200msDueMask;
+static uint16_t u16Can500msDueMask;
+static uint8_t u8Can1000msDue;
 static uint8_t u8CanLifeValue;
 static uint8_t u8DetdConnectedLast;
 static uint8_t u8CanBusSilent;
@@ -127,13 +144,17 @@ typedef enum
     DUCAR_CAN_TP_WAIT_EOM
 } ducar_can_tp_state_t;
 
+static bool ducar_can_queue_ack(uint8_t u8Status,
+                               uint8_t u8Destination,
+                               uint16_t u16FunctionCode,
+                               ducar_can_action_t eActionAfterAck);
+
 static uint8_t u8CanAckPending;
 static uint8_t u8CanAckStatus;
 static uint8_t u8CanAckDestination;
 static uint16_t u16CanAckFunctionCode;
 static ducar_can_action_t eCanActionAfterAck;
 static ducar_can_action_t eCanActionWaitingTx;
-static uint8_t u8CanActionWaitTicks;
 
 static ducar_can_tp_state_t eCanTpState;
 static uint8_t au8CanTpData[DUCAR_CAN_TP_MAX_DATA_LEN];
@@ -142,15 +163,15 @@ static uint8_t u8CanTpPacketCount;
 static uint8_t u8CanTpNextPacket;
 static uint8_t u8CanTpBurstPackets;
 static uint8_t u8CanTpDestination;
-static uint16_t u16CanTpWaitTicks;
 static uint16_t u16CanTpPgn;
 static uint16_t u16CanLogRequested;
 static uint16_t u16CanLogNext;
 static uint8_t u8CanSocOcvAckPending;
 static uint8_t u8CanSocOcvAckDestination;
-static uint16_t u16CanSocOcvWaitTicks;
 static uint8_t u8CanSocWriteAckPending;
 static uint8_t u8CanSocWriteAckDestination;
+static uint8_t u8CanLogClearAckPending;
+static uint8_t u8CanLogClearAckDestination;
 
 typedef struct
 {
@@ -209,6 +230,7 @@ void ducar_can_get_tx_queue_diagnostics(ducar_can_tx_queue_diag_t *diagnostics)
     diagnostics->tp_packet_count = u8CanTpPacketCount;
 }
 
+/* 发送ID：0x18E8[目标地址][BMS地址]，默认示例0x18E83A16；CAL2校准结果。 */
 static void ducar_can_cal2_reply_task(void)
 {
     app_current_calib_cal2_completion_t completion;
@@ -225,7 +247,7 @@ static void ducar_can_cal2_reply_task(void)
     if (((uint32_t)(s_cal2_can_ms - reply->queued_ms) >= 5000UL) ||
         d_can_send(&can0,
                    ducar_can_id_encode(DUCAR_CAN_PF_ACK, reply->destination,
-                                       DUCAR_CAN_BMS_A_ADDRESS),
+                                       g_ducar_can_bms_address),
                    D_CAN_ID_EXTENDED, reply->data, 8U))
     {
         s_cal2_reply_head = (uint8_t)((s_cal2_reply_head + 1U) % DUCAR_CAL2_REPLY_CAPACITY);
@@ -255,7 +277,14 @@ static uint8_t au8CanTpRxSn[APP_BMS_MANUFACTURE_SN_MAX_LEN];
 static uint8_t u8CanTpRxLength;
 static uint8_t u8CanTpRxPackets;
 static uint8_t u8CanTpRxNext;
-static uint16_t u16CanTpRxWaitTicks;
+static void ducar_can_clear_periodic_due(void);
+
+bool ducar_can_transport_is_active(void)
+{
+    return ((eCanTpState != DUCAR_CAN_TP_IDLE) ||
+            (u16CanLogNext != 0U) ||
+            (u8CanTpRxNext != 0U));
+}
 
 /* 按DUCAR 29位扩展ID格式组合优先级、PF、PS和源地址。 */
 static uint32_t ducar_can_id_encode(uint8_t u8Pf,
@@ -305,11 +334,11 @@ bool ducar_can_id_is_pc_source(const ducar_can_id_fields_t *ptCanIdFields)
 
 static uint32_t ducar_can_build_bms_data_id(uint16_t u16Pgn)
 {
-    /* 普通BMS_A主动/查询回复统一使用源地址0x16。 */
+    /* 主动报文和查询回复统一使用运行时BMS源地址。 */
     /* PGN高字节在PF位置，PGN低字节在PS位置。 */
     return ducar_can_id_encode((uint8_t)(u16Pgn >> 8U),
                                (uint8_t)u16Pgn,
-                               DUCAR_CAN_BMS_A_ADDRESS);
+                               g_ducar_can_bms_address);
 }
 
 static void ducar_can_write_u16_le(uint8_t *pau8CanData,
@@ -438,6 +467,7 @@ static int16_t ducar_can_cell_temperature_0p1c(const app_bms_snapshot_t *ptBmsSn
 }
 
 /* F20D：总压、电流、SOC、SOH和DETC状态。 */
+/* 发送ID：0x18F20D[BMS地址]，默认0x18F20D16。 */
 static void ducar_can_send_f20d(void)
 {
     app_bms_snapshot_t tBmsSnapshot;
@@ -474,6 +504,7 @@ static void ducar_can_send_f20d(void)
 }
 
 /* F20E：最大充放电电流以及最高、最低单体电压。 */
+/* 发送ID：0x18F20E[BMS地址]，默认0x18F20E16。 */
 static void ducar_can_send_f20e(void)
 {
     app_bms_snapshot_t tBmsSnapshot;
@@ -506,6 +537,7 @@ static void ducar_can_send_f20e(void)
 }
 
 /* F20F：发送单体1~4电压。 */
+/* 发送ID：0x18F20F[BMS地址]，默认0x18F20F16。 */
 static bool ducar_can_send_f20f(void)
 {
     app_bms_snapshot_t tBmsSnapshot;
@@ -528,6 +560,7 @@ static bool ducar_can_send_f20f(void)
 }
 
 /* F210：发送单体5~8电压。 */
+/* 发送ID：0x18F210[BMS地址]，默认0x18F21016。 */
 static void ducar_can_send_f210(void)
 {
     app_bms_snapshot_t tBmsSnapshot;
@@ -550,6 +583,7 @@ static void ducar_can_send_f210(void)
 }
 
 /* F211：发送单体9~12电压。 */
+/* 发送ID：0x18F211[BMS地址]，默认0x18F21116。 */
 static void ducar_can_send_f211(void)
 {
     app_bms_snapshot_t tBmsSnapshot;
@@ -572,6 +606,7 @@ static void ducar_can_send_f211(void)
 }
 
 /* F212：发送单体13~16电压。 */
+/* 发送ID：0x18F212[BMS地址]，默认0x18F21216。 */
 static void ducar_can_send_f212(void)
 {
     app_bms_snapshot_t tBmsSnapshot;
@@ -594,6 +629,7 @@ static void ducar_can_send_f212(void)
 }
 
 /* F213：发送单体17~20电压。 */
+/* 发送ID：0x18F213[BMS地址]，默认0x18F21316。 */
 static void ducar_can_send_f213(void)
 {
     app_bms_snapshot_t tBmsSnapshot;
@@ -617,6 +653,7 @@ static void ducar_can_send_f213(void)
 }
 
 /* F214：发送单体21~24电压；20串项目无效通道填无效值。 */
+/* 发送ID：0x18F214[BMS地址]，默认0x18F21416。 */
 static void ducar_can_send_f214(void)
 {
     app_bms_snapshot_t tBmsSnapshot;
@@ -640,6 +677,7 @@ static void ducar_can_send_f214(void)
 }
 
 /* F215：发送4路电芯温度。 */
+/* 发送ID：0x18F215[BMS地址]，默认0x18F21516。 */
 static void ducar_can_send_f215(void)
 {
     app_bms_snapshot_t tBmsSnapshot;
@@ -685,6 +723,7 @@ static uint8_t ducar_can_temperature_s8(int16_t s16Temperature0p1C)
 }
 
 /* F216：主MOS/预放MOS温度使用S8整数℃；电芯温度仍为S16的0.1℃。 */
+/* 发送ID：0x18F216[BMS地址]，默认0x18F21616。 */
 static void ducar_can_send_f216(void)
 {
     app_bms_snapshot_t tBmsSnapshot;
@@ -775,6 +814,7 @@ static uint16_t ducar_can_capacity_001ah(int32_t s32CapacityMah)
 }
 
 /* F217：发送循环次数、FCC、剩余容量和半充次数。 */
+/* 发送ID：0x18F217[BMS地址]，默认0x18F21716。 */
 static void ducar_can_send_f217(void)
 {
     app_bms_snapshot_t tBmsSnapshot;
@@ -805,10 +845,14 @@ static void ducar_can_send_f217(void)
 }
 
 /* F218：发送数字输入、MOS状态及按键状态位图。 */
+/* 发送ID：0x18F218[BMS地址]，默认0x18F21816。 */
 static void ducar_can_send_f218(void)
 {
     app_bms_snapshot_t tBmsSnapshot;
     uint8_t au8CanData[DUCAR_CAN_DATA_DLC] = {0};
+    uint8_t u8ChargeWarningLevel;
+    uint8_t u8DischargeWarningLevel;
+    uint8_t u8ParallelEnabled;
 
     /* 读取所有输入信号、MOS状态和按键在位标志。 */
     app_bms_snapshot_read(&tBmsSnapshot);
@@ -824,8 +868,16 @@ static void ducar_can_send_f218(void)
     {
         au8CanData[0] |= (uint8_t)(1U << 1U);
     }
-    /* A0.3 bit2=BMR、bit3=ID；本工程尚无已确认接入源，均报告未接入0。
-     * DET_LOAD和MCU_2nd_DET分别是负载/二级熔断检测，不能冒充BMR/ID。 */
+    /* bit2：协议位名为BMR，语义是检测到并联对端；由有效并联对端状态推导。 */
+    if (app_parallel_id_get_peer_detected_flag() != 0U)
+    {
+        au8CanData[0] |= (uint8_t)(1U << 2U);
+    }
+    /* bit3：协议ID状态位；UID编址rank非0时置位。 */
+    if (app_parallel_id_get_id_flag() != 0U)
+    {
+        au8CanData[0] |= (uint8_t)(1U << 3U);
+    }
     /* bit4：放电MOS当前打开。 */
     if (tBmsSnapshot.mos.dsg_mos_state != 0U)
     {
@@ -847,18 +899,42 @@ static void ducar_can_send_f218(void)
         au8CanData[0] |= (uint8_t)(1U << 7U);
     }
 
-    /* 当前产品没有并联BMS：三路并联MOS状态均按协议“NA=3”编码。 */
-    /* Data1/Data2当前没有并联BMS状态源，6个两位字段都编码为NA=3。 */
-    au8CanData[1] = 0x3FU;
-    au8CanData[2] = 0x3FU;
-    /* Data3/Data4是并联充放电告警等级；当前无并联控制模块，按默认0发送。
-     * 单机告警/保护分别在F21A~F21C、F21D~F21F报告。 */
-    au8CanData[3] = 0U;
-    au8CanData[4] = 0U;
+    /* Data1/2只表示并联控制，不代替Data0中的MOS硬件反馈。 */
+    u8ParallelEnabled = app_parallel_id_is_enabled();
+    if (u8ParallelEnabled != 0U)
+    {
+        /* Data1 bit0-1/2-3/4-5：本机DMOS/CMOS/PDMOS最终输出命令，0=OFF、1=ON。 */
+        au8CanData[1] = (uint8_t)((gt_app_h_power_manage.tcmd.u8dmos_ctl & 0x01U) |
+                                  ((gt_app_h_power_manage.tcmd.u8cmos_ctl & 0x01U) << 2U) |
+                                  ((gt_app_h_power_manage.tcmd.u8pdmos_ctl & 0x01U) << 4U));
+        /* bit6/7：并联阶段机给出的放电/充电许可；0=不允许，1=允许。 */
+        if (gtParallelLocalOutput.u8DmosControl != 0U)
+        {
+            au8CanData[1] |= (uint8_t)(1U << 6U);
+        }
+        if (gtParallelLocalOutput.u8CmosControl != 0U)
+        {
+            au8CanData[1] |= (uint8_t)(1U << 7U);
+        }
+
+        /* Data2是对端控制命令；本机没有远程驱动对端MOS的命令源，三路按NA=3上报。 */
+        au8CanData[2] = 0x3FU;
+    }
+    else
+    {
+        /* 并联未启用：三路并联MOS命令均报OFF，放电/充电并联许可均报不允许。 */
+        au8CanData[1] = 0U;
+        au8CanData[2] = 0U;
+    }
+    /* Data3/Data4：充电/放电告警等级，0正常、1告警/降额、2停止。 */
+    app_parallel_id_get_warning_levels(&u8ChargeWarningLevel,
+                                       &u8DischargeWarningLevel);
+    au8CanData[3] = u8ChargeWarningLevel;
+    au8CanData[4] = u8DischargeWarningLevel;
     /* Data5：A0.7 BMS工作状态，直接复用统一状态机输出（0静置、1放电、2充电、3回馈）。 */
     au8CanData[5] = tBmsSnapshot.bms_work_status;
-    /* Data6~Data7为保留字段，按0发送。 */
-    au8CanData[6] = 0U;
+    /* Data6：产品模式，0=半成品、1=成品；Data7保留并按0发送。 */
+    au8CanData[6] = app_param_get_product_mode();
     au8CanData[7] = 0U;
 
     /* 发送F218。 */
@@ -879,6 +955,7 @@ static uint16_t ducar_can_current_01a_from_sop(int16_t s16Current01A)
 }
 
 /* F219：充电需求和允许电流。 */
+/* 发送ID：0x18F219[BMS地址]，默认0x18F21916。 */
 static void ducar_can_send_f219(void)
 {
     app_bms_snapshot_t tBmsSnapshot;
@@ -910,6 +987,7 @@ static void ducar_can_send_f219(void)
 }
 
 /* F21A：电压、电芯和放电过流告警；保护由F21D单独发送。 */
+/* 发送ID：0x18F21A[BMS地址]，默认0x18F21A16。 */
 static void ducar_can_send_f21a(void)
 {
     app_bms_snapshot_t tBmsSnapshot;
@@ -957,6 +1035,7 @@ static void ducar_can_send_f21a(void)
 }
 
 /* F21B：电流、温度告警；保护和AFE故障由F21E单独发送。 */
+/* 发送ID：0x18F21B[BMS地址]，默认0x18F21B16。 */
 static void ducar_can_send_f21b(void)
 {
     app_bms_snapshot_t tBmsSnapshot;
@@ -998,6 +1077,7 @@ static void ducar_can_send_f21b(void)
 }
 
 /* F21C：环境与低SOC告警。 */
+/* 发送ID：0x18F21C[BMS地址]，默认0x18F21C16。 */
 static void ducar_can_send_f21c(void)
 {
     app_bms_snapshot_t tBmsSnapshot;
@@ -1029,6 +1109,7 @@ static void ducar_can_send_f21c(void)
 }
 
 /* F21D：电压、电芯和放电过流保护；每项只读取保护位。 */
+/* 发送ID：0x18F21D[BMS地址]，默认0x18F21D16。 */
 static void ducar_can_send_f21d(void)
 {
     app_bms_snapshot_t s;
@@ -1056,6 +1137,7 @@ static void ducar_can_send_f21d(void)
 }
 
 /* F21E：电流、温度保护及AFE故障1。 */
+/* 发送ID：0x18F21E[BMS地址]，默认0x18F21E16。 */
 static void ducar_can_send_f21e(void)
 {
     app_bms_snapshot_t s;
@@ -1081,6 +1163,7 @@ static void ducar_can_send_f21e(void)
 }
 
 /* F21F：环境、低SOC、AFE故障2、MOS、回馈、满充及其他保护位。 */
+/* 发送ID：0x18F21F[BMS地址]，默认0x18F21F16。 */
 static void ducar_can_send_f21f(void)
 {
     app_bms_snapshot_t s;
@@ -1180,6 +1263,7 @@ static uint16_t ducar_can_f220_event_count_u16(uint32_t u32EventCount)
 }
 
 /* F220：发送控制器欠压保护点、过充次数、过放次数和充电剩余时间。 */
+/* 发送ID：0x18F220[BMS地址]，默认0x18F22016。 */
 static void ducar_can_send_f220(void)
 {
     app_bms_snapshot_t tBmsSnapshot;
@@ -1207,6 +1291,7 @@ static void ducar_can_send_f220(void)
 }
 
 /* F221：发送当前已成功应用到AFE的逻辑电芯均衡位图。 */
+/* 发送ID：0x18F221[BMS地址]，默认0x18F22116。 */
 static void ducar_can_send_f221(void)
 {
     uint8_t au8CanData[DUCAR_CAN_DATA_DLC] = {0};
@@ -1230,15 +1315,17 @@ void ducar_can_protocol_init(void)
 {
     s_cal2_reply_head = 0U;
     s_cal2_reply_count = 0U;
-    s_cal2_can_ms = 0U;
-    /* 上电或CAN重新初始化时，清空1ms基准计数。 */
-    u16Can1msCount = 0U;
+    s_ducar_can_last_ms = d_timer_get_ms();
+    s_cal2_can_ms = s_ducar_can_last_ms;
+    /* 上电或CAN重新初始化时，清空TIM6派生的周期相位。 */
+    u16CanTimePhaseMs = 0U;
     /* 清空DETD触发的主动发送剩余时间。 */
-    u16DetdProactiveTxTicks = 0U;
-    /* CAN重新初始化时清除F20F待发状态。 */
-    u8CanF20fPending = 0U;
+    u32DetdProactiveTxMs = 0U;
+    u8ParallelPeriodicTxActive = 0U;
+    /* 清除尚未发送的周期槽。 */
+    ducar_can_clear_periodic_due();
     /* 清空LifeValue计时。 */
-    u16CanLifeValueTicks = 0U;
+    u32CanLifeValueMs = 0U;
     /* LifeValue从0开始递增。 */
     u8CanLifeValue = 0U;
     /* 默认认为DETD未在位，等待下一次有效上升沿。 */
@@ -1262,7 +1349,7 @@ void ducar_can_protocol_init(void)
     /* 清除已经发出ACK、等待邮箱完成的动作。 */
     eCanActionWaitingTx = DUCAR_CAN_ACTION_NONE;
     /* 清除动作等待超时计数。 */
-    u8CanActionWaitTicks = 0U;
+    u32CanActionWaitMs = 0U;
     /* TP状态回到空闲，不保留上一次长报文会话。 */
     eCanTpState = DUCAR_CAN_TP_IDLE;
     /* 清除TP有效数据长度。 */
@@ -1276,20 +1363,20 @@ void ducar_can_protocol_init(void)
     /* 默认TP目标为PC。 */
     u8CanTpDestination = DUCAR_CAN_PC_ADDRESS;
     /* 清除TP等待CTS/EOM计时。 */
-    u16CanTpWaitTicks = 0U;
+    u32CanTpWaitMs = 0U;
     /* 清除当前TP会话PGN。 */
     u16CanTpPgn = 0U;
     u16CanLogRequested = 0U;
     u16CanLogNext = 0U;
     u8CanSocOcvAckPending = 0U;
     u8CanSocOcvAckDestination = DUCAR_CAN_PC_ADDRESS;
-    u16CanSocOcvWaitTicks = 0U;
+    u32CanSocOcvWaitMs = 0U;
     u8CanSocWriteAckPending = 0U;
     u8CanSocWriteAckDestination = DUCAR_CAN_PC_ADDRESS;
     u8CanTpRxLength = 0U;
     u8CanTpRxPackets = 0U;
     u8CanTpRxNext = 0U;
-    u16CanTpRxWaitTicks = 0U;
+    u32CanTpRxWaitMs = 0U;
 }
 
 void ducar_can_protocol_set_iap_silence(bool enabled)
@@ -1311,19 +1398,20 @@ void ducar_can_protocol_set_iap_silence(bool enabled)
         u8CanAckPending = 0U;
         eCanActionAfterAck = DUCAR_CAN_ACTION_NONE;
         eCanActionWaitingTx = DUCAR_CAN_ACTION_NONE;
-        u8CanActionWaitTicks = 0U;
+        u32CanActionWaitMs = 0U;
         eCanTpState = DUCAR_CAN_TP_IDLE;
         u8CanTpDataLength = 0U;
         u8CanTpPacketCount = 0U;
         u8CanTpNextPacket = 0U;
         u8CanTpBurstPackets = 0U;
-        u16CanTpWaitTicks = 0U;
+        u32CanTpWaitMs = 0U;
         u16CanTpPgn = 0U;
         u16CanLogRequested = 0U;
         u16CanLogNext = 0U;
         u8CanSocOcvAckPending = 0U;
-        u16CanSocOcvWaitTicks = 0U;
+        u32CanSocOcvWaitMs = 0U;
         u8CanSocWriteAckPending = 0U;
+        ducar_can_clear_periodic_due();
     }
     else
     {
@@ -1338,6 +1426,10 @@ void ducar_can_data_renew(void)
 
     /* 从总快照读取已经消抖后的DETD状态。 */
     app_bms_snapshot_read(&tBmsSnapshot);
+    u8ParallelPeriodicTxActive =
+        ((app_parallel_id_is_enabled() != 0U) &&
+         ((tBmsSnapshot.signal.input.mcu_detd != 0U) ||
+          (tBmsSnapshot.signal.input.mcu_detc != 0U))) ? 1U : 0U;
     /* 将结构体中的布尔量规范化成0或1，便于边沿比较。 */
     u8DetdConnected = (tBmsSnapshot.signal.input.mcu_detd != 0U) ? 1U : 0U;
 
@@ -1345,122 +1437,250 @@ void ducar_can_data_renew(void)
     /* 新状态为在位且旧状态为不在位时，认定发生一次DETD接入事件。 */
     if ((u8DetdConnected != 0U) && (u8DetdConnectedLast == 0U))
     {
-        /* 5秒窗口按1ms任务节拍装载5000个计数。 */
-        u16DetdProactiveTxTicks = DUCAR_CAN_DETD_TX_WINDOW_TICKS;
+        /* 5秒窗口按TIM6的实际毫秒计时。 */
+        u32DetdProactiveTxMs = DUCAR_CAN_DETD_TX_WINDOW_MS;
     }
 
     /* 保存本次状态，供下一次调用进行边沿比较。 */
     u8DetdConnectedLast = u8DetdConnected;
 }
 
-void ducar_can_bus_timer_handle(void)
+static bool ducar_can_time_slot_crossed(uint16_t previous_count,
+                                        uint32_t elapsed_ms,
+                                        uint16_t period_ms,
+                                        uint16_t phase_ms)
 {
-    ++s_cal2_can_ms;
-    app_current_calib_cal2_advance_ms(1U);
-    /* Comm_Task每1ms调用一次；基准计数始终推进，静默/窗口外也不暂停。 */
-    if (++u16Can1msCount >= (DUCAR_CAN_CYCLE_1000MS * 2U))
+    uint16_t previous_phase;
+    uint16_t distance_to_slot;
+
+    if ((elapsed_ms == 0U) || (period_ms == 0U))
     {
-        u16Can1msCount = 0U;
+        return false;
     }
-    if ((u8CanTpRxNext != 0U) &&
-        (++u16CanTpRxWaitTicks >= DUCAR_CAN_CYCLE_500MS * 10U))
+    previous_phase = (uint16_t)(previous_count % period_ms);
+    distance_to_slot = (uint16_t)((phase_ms + period_ms - previous_phase) % period_ms);
+    if (distance_to_slot == 0U)
     {
-        u8CanTpRxNext = 0U;
-        u16CanTpRxWaitTicks = 0U;
+        distance_to_slot = period_ms;
     }
-    /* PF=E0控制的静默状态没有隐式超时；接收函数是唯一的修改点。 */
-    /* 每经过一次1ms任务，LifeValue计时加一。 */
-    if (++u16CanLifeValueTicks >= DUCAR_CAN_CYCLE_1000MS)
+    return (elapsed_ms >= distance_to_slot);
+}
+
+static void ducar_can_clear_periodic_due(void)
+{
+    u8Can50msDue = 0U;
+    u16Can100msDueMask = 0U;
+    u16Can200msDueMask = 0U;
+    u16Can500msDueMask = 0U;
+    u8Can1000msDue = 0U;
+}
+
+static void ducar_can_schedule_periodic_slots(uint16_t previous_count,
+                                               uint32_t elapsed_ms)
+{
+    uint8_t index;
+
+    if (((u32DetdProactiveTxMs == 0U) && (u8ParallelPeriodicTxActive == 0U)) ||
+        zs_b1_can_protocol_is_silent() ||
+        (u8CanBusSilent != 0U) ||
+        (u8CanIapSilenceActive != 0U) || !d_can_is_bus_online(&can0))
     {
-        /* 达到1秒后重新计时。 */
-        u16CanLifeValueTicks = 0U;
-        /* LifeValue按字节自然溢出循环递增。 */
-        u8CanLifeValue++;
+        ducar_can_clear_periodic_due();
+        return;
     }
 
-    /* 所有活跃TP阶段均有5秒无进展超时；发送邮箱堵塞也不能永久占用会话。 */
+    if (ducar_can_time_slot_crossed(previous_count, elapsed_ms,
+                                    DUCAR_CAN_CYCLE_50MS, 0U))
+    {
+        u8Can50msDue = 1U;
+    }
+    /* 100ms组槽位依次是F20D、F20E、F21A~F21F、F219。 */
+    for (index = 0U; index < 9U; ++index)
+    {
+        uint16_t phase = (uint16_t)(DUCAR_CAN_CYCLE_100MS - 1U - index);
+        if (ducar_can_time_slot_crossed(previous_count, elapsed_ms,
+                                        DUCAR_CAN_CYCLE_100MS, phase))
+        {
+            u16Can100msDueMask |= (uint16_t)(1U << index);
+        }
+    }
+    /* 200ms组槽位依次是F20F~F214、F221。 */
+    for (index = 0U; index < 7U; ++index)
+    {
+        uint16_t phase = (uint16_t)(DUCAR_CAN_CYCLE_200MS - 9U - index);
+        if (ducar_can_time_slot_crossed(previous_count, elapsed_ms,
+                                        DUCAR_CAN_CYCLE_200MS, phase))
+        {
+            u16Can200msDueMask |= (uint16_t)(1U << index);
+        }
+    }
+    /* 500ms组槽位依次是F215、F216、F217。 */
+    for (index = 0U; index < 3U; ++index)
+    {
+        uint16_t phase = (uint16_t)(DUCAR_CAN_CYCLE_500MS - 15U - index);
+        if (ducar_can_time_slot_crossed(previous_count, elapsed_ms,
+                                        DUCAR_CAN_CYCLE_500MS, phase))
+        {
+            u16Can500msDueMask |= (uint16_t)(1U << index);
+        }
+    }
+    if (ducar_can_time_slot_crossed(previous_count, elapsed_ms,
+                                    DUCAR_CAN_CYCLE_1000MS, 974U))
+    {
+        u8Can1000msDue = 1U;
+    }
+}
+
+void ducar_can_bus_timer_handle(void)
+{
+    uint32_t now_ms = d_timer_get_ms();
+    uint32_t elapsed_ms = (uint32_t)(now_ms - s_ducar_can_last_ms);
+    uint16_t previous_count = u16CanTimePhaseMs;
+    const uint32_t tp_timeout_ms = DUCAR_CAN_CYCLE_500MS * 10U;
+
+    s_ducar_can_last_ms = now_ms;
+    s_cal2_can_ms = now_ms;
+    app_current_calib_cal2_advance_ms(elapsed_ms);
+
+    /* 周期槽相位由TIM6实际毫秒推进，任务循环频率不再影响报文周期。 */
+    u16CanTimePhaseMs = (uint16_t)((u16CanTimePhaseMs +
+                       (elapsed_ms % (DUCAR_CAN_CYCLE_1000MS * 2U))) %
+                       (DUCAR_CAN_CYCLE_1000MS * 2U));
+    ducar_can_schedule_periodic_slots(previous_count, elapsed_ms);
+
+    if (u32DetdProactiveTxMs != 0U)
+    {
+        u32DetdProactiveTxMs = (elapsed_ms >= u32DetdProactiveTxMs) ?
+                               0U : (u32DetdProactiveTxMs - elapsed_ms);
+    }
+    if (u8CanTpRxNext != 0U)
+    {
+        u32CanTpRxWaitMs = (elapsed_ms >= (tp_timeout_ms - u32CanTpRxWaitMs)) ?
+                           tp_timeout_ms : (u32CanTpRxWaitMs + elapsed_ms);
+        if (u32CanTpRxWaitMs >= tp_timeout_ms)
+        {
+            u8CanTpRxNext = 0U;
+            u32CanTpRxWaitMs = 0U;
+        }
+    }
+
+    /* PF=E0控制的静默状态没有隐式超时；接收函数是唯一的修改点。 */
+    {
+        uint32_t elapsed_seconds = elapsed_ms / DUCAR_CAN_CYCLE_1000MS;
+        uint32_t remainder_ms = (elapsed_ms % DUCAR_CAN_CYCLE_1000MS) + u32CanLifeValueMs;
+        if (remainder_ms >= DUCAR_CAN_CYCLE_1000MS)
+        {
+            remainder_ms -= DUCAR_CAN_CYCLE_1000MS;
+            elapsed_seconds++;
+        }
+        u32CanLifeValueMs = remainder_ms;
+        u8CanLifeValue = (uint8_t)(u8CanLifeValue + elapsed_seconds);
+    }
+
     if (eCanTpState != DUCAR_CAN_TP_IDLE)
     {
-        /* 累加当前TP等待时长。 */
-        if (++u16CanTpWaitTicks >= DUCAR_CAN_CYCLE_500MS * 10U)
+        u32CanTpWaitMs = (elapsed_ms >= (tp_timeout_ms - u32CanTpWaitMs)) ?
+                         tp_timeout_ms : (u32CanTpWaitMs + elapsed_ms);
+        if (u32CanTpWaitMs >= tp_timeout_ms)
         {
-            /* 5秒未收到有效控制帧或未成功发送数据时释放会话，允许后续查询重试。 */
+            /* 日志TP等待CTS/EOM超时后通知上位机，并完整结束本次下载请求。 */
+            if ((u16CanTpPgn == DUCAR_CAN_PGN_F232) &&
+                (u16CanLogNext != 0U))
+            {
+                (void)ducar_can_queue_ack(DUCAR_CAN_NAK,
+                                          DUCAR_CAN_PC_ADDRESS,
+                                          DUCAR_CAN_PGN_F232,
+                                          DUCAR_CAN_ACTION_NONE);
+                u16CanLogRequested = 0U;
+            }
             eCanTpState = DUCAR_CAN_TP_IDLE;
-            u16CanTpWaitTicks = 0U;
+            u32CanTpWaitMs = 0U;
             u16CanLogNext = 0U;
         }
+    }
+    if (u8CanSocOcvAckPending != 0U)
+    {
+        u32CanSocOcvWaitMs = (elapsed_ms >= (5000U - u32CanSocOcvWaitMs)) ?
+                             5000U : (u32CanSocOcvWaitMs + elapsed_ms);
+    }
+    if ((u8CanAckPending != 0U) ||
+        (eCanActionWaitingTx != DUCAR_CAN_ACTION_NONE))
+    {
+        u32CanActionWaitMs = (elapsed_ms >= (DUCAR_CAN_ACK_WAIT_MAX_MS - u32CanActionWaitMs)) ?
+                             DUCAR_CAN_ACK_WAIT_MAX_MS : (u32CanActionWaitMs + elapsed_ms);
     }
 }
 
 bool ducar_can_detd_tx_window_is_active(void)
 {
-    /* 每调用一次消耗一个1ms窗口计数；静默仅抑制发送，不改变窗口寿命。 */
-    /* 计数为0表示DETD触发窗口已经结束。 */
-    if (u16DetdProactiveTxTicks == 0U)
+    if (((u32DetdProactiveTxMs == 0U) && (u8ParallelPeriodicTxActive == 0U)) ||
+        zs_b1_can_protocol_is_silent() ||
+        (u8CanBusSilent != 0U) ||
+        (u8CanIapSilenceActive != 0U) || !d_can_is_bus_online(&can0))
     {
+        ducar_can_clear_periodic_due();
         return false;
     }
-
-    /* 先消耗一个本次发送周期的窗口配额。 */
-    u16DetdProactiveTxTicks--;
-
-    /* 静默只抑制本轮发送，不会清掉或重装DETD的5秒计数。 */
-    return (u8CanBusSilent == 0U);
+    return true;
 }
 
 void ducar_can_50ms_task(void)
 {
     /* 50ms槽只发送F218，承载输入信号和MOS状态。 */
-
-    /* 当前槽命中50ms节拍时发送F218。 */
-    if ((u16Can1msCount % DUCAR_CAN_CYCLE_50MS) == 0U)
+    if (u8Can50msDue != 0U)
     {
+        u8Can50msDue = 0U;
         ducar_can_send_f218();
     }
+}
+
+static bool ducar_can_take_due(uint16_t *mask, uint8_t bit)
+{
+    uint16_t bit_mask = (uint16_t)(1U << bit);
+    if ((*mask & bit_mask) == 0U)
+    {
+        return false;
+    }
+    *mask &= (uint16_t)~bit_mask;
+    return true;
 }
 
 void ducar_can_100ms_task(void)
 {
     /* 100ms槽发送F20D/F20E、F219及A0.2的告警和保护帧。 */
-    /* 每个分支使用不同偏移，把多个同周期报文分散到不同1ms槽。 */
-    if (((u16Can1msCount + 1U) % DUCAR_CAN_CYCLE_100MS) == 0U)
+    if (ducar_can_take_due(&u16Can100msDueMask, 0U))
     {
-        /* 第一个100ms槽发送F20D。 */
         ducar_can_send_f20d();
     }
-    else if (((u16Can1msCount + 2U) % DUCAR_CAN_CYCLE_100MS) == 0U)
+    else if (ducar_can_take_due(&u16Can100msDueMask, 1U))
     {
-        /* 第二个100ms槽发送F20E。 */
         ducar_can_send_f20e();
     }
-    else if (((u16Can1msCount + 3U) % DUCAR_CAN_CYCLE_100MS) == 0U)
+    else if (ducar_can_take_due(&u16Can100msDueMask, 2U))
     {
-        /* 第三个100ms槽发送F21A。 */
         ducar_can_send_f21a();
     }
-    else if (((u16Can1msCount + 4U) % DUCAR_CAN_CYCLE_100MS) == 0U)
+    else if (ducar_can_take_due(&u16Can100msDueMask, 3U))
     {
-        /* 第四个100ms槽发送F21B。 */
         ducar_can_send_f21b();
     }
-    else if (((u16Can1msCount + 5U) % DUCAR_CAN_CYCLE_100MS) == 0U)
+    else if (ducar_can_take_due(&u16Can100msDueMask, 4U))
     {
-        /* 第五个100ms槽发送F21C。 */
         ducar_can_send_f21c();
     }
-    else if (((u16Can1msCount + 6U) % DUCAR_CAN_CYCLE_100MS) == 0U)
+    else if (ducar_can_take_due(&u16Can100msDueMask, 5U))
     {
         ducar_can_send_f21d();
     }
-    else if (((u16Can1msCount + 7U) % DUCAR_CAN_CYCLE_100MS) == 0U)
+    else if (ducar_can_take_due(&u16Can100msDueMask, 6U))
     {
         ducar_can_send_f21e();
     }
-    else if (((u16Can1msCount + 8U) % DUCAR_CAN_CYCLE_100MS) == 0U)
+    else if (ducar_can_take_due(&u16Can100msDueMask, 7U))
     {
         ducar_can_send_f21f();
     }
-    else if (((u16Can1msCount + 9U) % DUCAR_CAN_CYCLE_100MS) == 0U)
+    else if (ducar_can_take_due(&u16Can100msDueMask, 8U))
     {
         ducar_can_send_f219();
     }
@@ -1470,52 +1690,37 @@ void ducar_can_200ms_task(void)
 {
     /* 200ms槽依次错开发送F20F~F214单体电压报文。 */
     /* 200ms周期内按偏移依次发送6组单体电压。 */
-    if (u8CanF20fPending != 0U)
+    if ((u16Can200msDueMask & 0x01U) != 0U)
     {
-        /* 邮箱暂满时每个1ms通信周期重试；成功后本周期不重复发送其它200ms帧。 */
+        /* 邮箱暂满时保留F20F待发位，下一轮任务继续重试。 */
         if (ducar_can_send_f20f())
         {
-            u8CanF20fPending = 0U;
+            u16Can200msDueMask &= (uint16_t)~0x01U;
         }
         return;
     }
-
-    if (((u16Can1msCount + 9U) % DUCAR_CAN_CYCLE_200MS) == 0U)
+    else if (ducar_can_take_due(&u16Can200msDueMask, 1U))
     {
-        /* 发送F20F。 */
-        if (!ducar_can_send_f20f())
-        {
-            u8CanF20fPending = 1U;
-        }
-    }
-    else if (((u16Can1msCount + 10U) % DUCAR_CAN_CYCLE_200MS) == 0U)
-    {
-        /* 发送F210。 */
         ducar_can_send_f210();
     }
-    else if (((u16Can1msCount + 11U) % DUCAR_CAN_CYCLE_200MS) == 0U)
+    else if (ducar_can_take_due(&u16Can200msDueMask, 2U))
     {
-        /* 发送F211。 */
         ducar_can_send_f211();
     }
-    else if (((u16Can1msCount + 12U) % DUCAR_CAN_CYCLE_200MS) == 0U)
+    else if (ducar_can_take_due(&u16Can200msDueMask, 3U))
     {
-        /* 发送F212。 */
         ducar_can_send_f212();
     }
-    else if (((u16Can1msCount + 13U) % DUCAR_CAN_CYCLE_200MS) == 0U)
+    else if (ducar_can_take_due(&u16Can200msDueMask, 4U))
     {
-        /* 发送F213。 */
         ducar_can_send_f213();
     }
-    else if (((u16Can1msCount + 14U) % DUCAR_CAN_CYCLE_200MS) == 0U)
+    else if (ducar_can_take_due(&u16Can200msDueMask, 5U))
     {
-        /* 发送F214。 */
         ducar_can_send_f214();
     }
-    else if (((u16Can1msCount + 15U) % DUCAR_CAN_CYCLE_200MS) == 0U)
+    else if (ducar_can_take_due(&u16Can200msDueMask, 6U))
     {
-        /* A0.5 F221均衡状态每200ms发送一次。 */
         ducar_can_send_f221();
     }
 }
@@ -1523,19 +1728,16 @@ void ducar_can_200ms_task(void)
 void ducar_can_500ms_task(void)
 {
     /* 500ms槽只发送F215~F217温度和容量报文。 */
-    if (((u16Can1msCount + 15U) % DUCAR_CAN_CYCLE_500MS) == 0U)
+    if (ducar_can_take_due(&u16Can500msDueMask, 0U))
     {
-        /* 发送F215。 */
         ducar_can_send_f215();
     }
-    else if (((u16Can1msCount + 16U) % DUCAR_CAN_CYCLE_500MS) == 0U)
+    else if (ducar_can_take_due(&u16Can500msDueMask, 1U))
     {
-        /* 发送F216。 */
         ducar_can_send_f216();
     }
-    else if (((u16Can1msCount + 17U) % DUCAR_CAN_CYCLE_500MS) == 0U)
+    else if (ducar_can_take_due(&u16Can500msDueMask, 2U))
     {
-        /* 发送F217。 */
         ducar_can_send_f217();
     }
 }
@@ -1543,12 +1745,14 @@ void ducar_can_500ms_task(void)
 void ducar_can_1000ms_task(void)
 {
     /* A0.3 F220控制器欠压保护点/统计报文按1000ms发送。 */
-    if (((u16Can1msCount + 26U) % DUCAR_CAN_CYCLE_1000MS) == 0U)
+    if (u8Can1000msDue != 0U)
     {
+        u8Can1000msDue = 0U;
         ducar_can_send_f220();
     }
 }
 
+/* 发送ID：0x18E8[目标地址][BMS地址]，默认示例0x18E83A16；ACK/NAK。 */
 static bool ducar_can_send_ack(uint8_t u8Status,
                                uint8_t u8Destination,
                                uint16_t u16FunctionCode)
@@ -1566,11 +1770,11 @@ static bool ducar_can_send_ack(uint8_t u8Status,
     /* Data7携带被确认PF/PGN的高字节。 */
     au8CanData[7] = (uint8_t)(u16FunctionCode >> 8U);
 
-    /* ACK帧目标为触发该命令的源地址，源地址固定为BMS_A。 */
+    /* ACK目标为请求方，源地址使用运行时BMS地址。 */
     return d_can_send(&can0,
                       ducar_can_id_encode(DUCAR_CAN_PF_ACK,
                                           u8Destination,
-                                          DUCAR_CAN_BMS_A_ADDRESS),
+                                          g_ducar_can_bms_address),
                       D_CAN_ID_EXTENDED,
                       au8CanData,
                       DUCAR_CAN_DATA_DLC);
@@ -1600,7 +1804,7 @@ static bool ducar_can_queue_ack(uint8_t u8Status,
     /* 标记有待发送ACK。 */
     u8CanAckPending = 1U;
     /* 从0开始统计ACK发送后等待时间。 */
-    u8CanActionWaitTicks = 0U;
+    u32CanActionWaitMs = 0U;
     return true;
 }
 
@@ -1675,7 +1879,7 @@ static bool ducar_can_tp_start(uint8_t u8Destination,
     /* 保存本次TP目标地址。 */
     u8CanTpDestination = u8Destination;
     /* 清除本次TP等待计时。 */
-    u16CanTpWaitTicks = 0U;
+    u32CanTpWaitMs = 0U;
     /* 保存本次TP对应的PGN，后续校验CTS/EOM ACK必须匹配。 */
     u16CanTpPgn = u16Pgn;
     /* 下一次周期任务先发送RTS。 */
@@ -1684,7 +1888,8 @@ static bool ducar_can_tp_start(uint8_t u8Destination,
 }
 
 /*
- * 发送查询响应：不超过8字节时直接发单帧，超过8字节时转入TP发送状态机。
+ * 发送查询响应：单帧ID为0x18[PGN高字节][PGN低字节][BMS地址]；
+ * 超过8字节时进入TP，RTS/DT分别使用0x18EC[目标][BMS]和0x18EB[目标][BMS]。
  */
 static bool ducar_can_send_requested_data(uint8_t u8Destination,
                                           uint16_t u16Pgn,
@@ -1712,7 +1917,7 @@ static bool ducar_can_send_requested_data(uint8_t u8Destination,
     return d_can_send(&can0,
                       ducar_can_id_encode((uint8_t)(u16Pgn >> 8U),
                                           (uint8_t)u16Pgn,
-                                          DUCAR_CAN_BMS_A_ADDRESS),
+                                          g_ducar_can_bms_address),
                       D_CAN_ID_EXTENDED,
                       pau8Data,
                       u8DataLength);
@@ -1723,6 +1928,7 @@ static bool ducar_can_send_requested_data(uint8_t u8Destination,
  * Data0/1为请求PGN，Data2为查询控制字节；响应内容按PGN选择，
  * 对不具备数据源或不支持的PGN统一排队NAK。
  */
+/* 空SN的单帧响应ID：0x18F230[BMS地址]，默认0x18F23016；其余查询交给发送接口。 */
 static void ducar_can_receive_request(const t_can_packet *ptCanPacket,
                                       const ducar_can_id_fields_t *ptCanIdFields)
 {
@@ -1738,7 +1944,7 @@ static void ducar_can_receive_request(const t_can_packet *ptCanPacket,
         /* 查询只能由PC发起。 */
         (!ducar_can_id_is_pc_source(ptCanIdFields)) ||
         /* 目标只能是本BMS或全局地址。 */
-        ((ptCanIdFields->u8Ps != DUCAR_CAN_BMS_A_ADDRESS) &&
+        ((ptCanIdFields->u8Ps != g_ducar_can_bms_address) &&
          (ptCanIdFields->u8Ps != DUCAR_CAN_GLOBAL_ADDRESS)))
     {
         return;
@@ -1751,7 +1957,7 @@ static void ducar_can_receive_request(const t_can_packet *ptCanPacket,
     {
         static const uint8_t capability[8] = {'C', 'A', 'L', '2', 1U, 1U, 0xFFU, 0xFFU};
         /* 能力查询只能定向到本PACK，不能用广播或附带额外字节。 */
-        if ((ptCanIdFields->u8Ps == DUCAR_CAN_BMS_A_ADDRESS) &&
+        if ((ptCanIdFields->u8Ps == g_ducar_can_bms_address) &&
             (ptCanPacket->u8len == 3U) && (ptCanPacket->au8data[2] == 0U))
         {
             (void)ducar_can_send_requested_data(ptCanIdFields->u8Sa,
@@ -1772,7 +1978,7 @@ static void ducar_can_receive_request(const t_can_packet *ptCanPacket,
     }
 
     /* 所有通过来源、目标和格式检查的PC查询都续期，不依赖查询的PGN是否受支持。 */
-    u16DetdProactiveTxTicks = DUCAR_CAN_DETD_TX_WINDOW_TICKS;
+    u32DetdProactiveTxMs = DUCAR_CAN_DETD_TX_WINDOW_MS;
 
     /* 根据请求PGN准备对应响应数据和长度。 */
     switch (u16RequestedPgn)
@@ -1788,8 +1994,10 @@ static void ducar_can_receive_request(const t_can_packet *ptCanPacket,
                 (ptCanPacket->u8len == 3U))
             {
                 uint16_t count = app_log_rtd_num();
-                au8ResponseData[0] = (count > 255U) ? 255U : (uint8_t)count;
-                u8ResponseLength = 1U;
+                /* A1.4：LOG总条数为U16小端，兼容超过255条时的完整计数。 */
+                au8ResponseData[0] = (uint8_t)(count & 0xFFU);
+                au8ResponseData[1] = (uint8_t)(count >> 8U);
+                u8ResponseLength = 2U;
                 break;
             }
             if ((ptCanPacket->au8data[2] == 0x01U) &&
@@ -1888,7 +2096,7 @@ static void ducar_can_receive_request(const t_can_packet *ptCanPacket,
                 if (!d_can_send(&can0,
                                 ducar_can_id_encode((uint8_t)(u16RequestedPgn >> 8U),
                                                     (uint8_t)u16RequestedPgn,
-                                                    DUCAR_CAN_BMS_A_ADDRESS),
+                                                    g_ducar_can_bms_address),
                                 D_CAN_ID_EXTENDED,
                                 au8ResponseData,
                                 0U))
@@ -2051,6 +2259,7 @@ static void ducar_can_receive_request(const t_can_packet *ptCanPacket,
  * 处理普通协议TP连接管理报文。
  * 只接受当前会话对应PGN的CTS、EOM ACK和ABORT，避免其他会话误推进发送状态。
  */
+/* SN写入CTS发送ID：0x18EC[目标地址][BMS地址]，默认0x18EC3A16。 */
 static void ducar_can_receive_tp_cm(const t_can_packet *ptCanPacket,
                                     const ducar_can_id_fields_t *ptCanIdFields)
 {
@@ -2064,7 +2273,7 @@ static void ducar_can_receive_tp_cm(const t_can_packet *ptCanPacket,
         /* CTS/EOM ACK/ABORT只能由PC发送。 */
         (!ducar_can_id_is_pc_source(ptCanIdFields)) ||
         /* 普通协议TP只接受发往本BMS的控制帧。 */
-        (ptCanIdFields->u8Ps != DUCAR_CAN_BMS_A_ADDRESS))
+        (ptCanIdFields->u8Ps != g_ducar_can_bms_address))
     {
         return;
     }
@@ -2092,7 +2301,7 @@ static void ducar_can_receive_tp_cm(const t_can_packet *ptCanPacket,
         }
         cm[1] = packets;
         if (!d_can_send(&can0, ducar_can_id_encode(DUCAR_CAN_PF_TP_CM,
-                         ptCanIdFields->u8Sa, DUCAR_CAN_BMS_A_ADDRESS),
+                         ptCanIdFields->u8Sa, g_ducar_can_bms_address),
                          D_CAN_ID_EXTENDED, cm, sizeof(cm)))
         {
             return;
@@ -2100,7 +2309,7 @@ static void ducar_can_receive_tp_cm(const t_can_packet *ptCanPacket,
         u8CanTpRxLength = (uint8_t)length;
         u8CanTpRxPackets = packets;
         u8CanTpRxNext = 1U;
-        u16CanTpRxWaitTicks = 0U;
+        u32CanTpRxWaitMs = 0U;
         return;
     }
     if ((ptCanPacket->au8data[0] == DUCAR_CAN_TP_ABORT) &&
@@ -2118,9 +2327,16 @@ static void ducar_can_receive_tp_cm(const t_can_packet *ptCanPacket,
     /* ABORT无论当前处于哪个等待状态，都立即释放TP会话。 */
     if (ptCanPacket->au8data[0] == DUCAR_CAN_TP_ABORT)
     {
+        /* ABORT终止日志下载时也清请求计数，避免把后续空闲误判为活动传输。 */
+        if ((u16CanTpPgn == DUCAR_CAN_PGN_F232) &&
+            (u16CanLogNext != 0U))
+        {
+            u16CanLogNext = 0U;
+            u16CanLogRequested = 0U;
+        }
         /* 清除TP状态，等待下一次查询响应。 */
         eCanTpState = DUCAR_CAN_TP_IDLE;
-        u16CanTpWaitTicks = 0U;
+        u32CanTpWaitMs = 0U;
         return;
     }
 
@@ -2133,7 +2349,7 @@ static void ducar_can_receive_tp_cm(const t_can_packet *ptCanPacket,
     {
         /* 校验长度、保留字节和包数均匹配后结束会话。 */
         eCanTpState = DUCAR_CAN_TP_IDLE;
-        u16CanTpWaitTicks = 0U;
+        u32CanTpWaitMs = 0U;
         if ((u16CanTpPgn == DUCAR_CAN_PGN_F232) && (u16CanLogNext != 0U))
         {
             if (u16CanLogNext < u16CanLogRequested)
@@ -2184,7 +2400,7 @@ static void ducar_can_receive_tp_cm(const t_can_packet *ptCanPacket,
     u8CanTpBurstPackets = (u8RequestedPackets < u8PacketsLeft) ?
                           u8RequestedPackets : u8PacketsLeft;
     /* 收到CTS后清除等待计时。 */
-    u16CanTpWaitTicks = 0U;
+    u32CanTpWaitMs = 0U;
     /* 下一次发送任务开始发送DT。 */
     eCanTpState = DUCAR_CAN_TP_SEND_DT;
 }
@@ -2193,12 +2409,13 @@ static void ducar_can_receive_tp_cm(const t_can_packet *ptCanPacket,
  * 处理普通协议TP数据报文。
  * 当前A0.1的普通查询数据由BMS发送，PC只接收响应控制，因此这里不组包。
  */
+/* SN写入EOM发送ID：0x18EC[目标地址][BMS地址]，默认0x18EC3A16。 */
 static void ducar_can_receive_tp_dt(const t_can_packet *ptCanPacket,
                                     const ducar_can_id_fields_t *ptCanIdFields)
 {
     uint8_t offset, count, cm[8];
     if ((u8CanTpRxNext == 0U) || !ducar_can_id_is_pc_source(ptCanIdFields) ||
-        (ptCanIdFields->u8Ps != DUCAR_CAN_BMS_A_ADDRESS) ||
+        (ptCanIdFields->u8Ps != g_ducar_can_bms_address) ||
         (ptCanPacket->u8len < 2U) ||
         (ptCanPacket->au8data[0] != u8CanTpRxNext))
     {
@@ -2209,7 +2426,7 @@ static void ducar_can_receive_tp_dt(const t_can_packet *ptCanPacket,
     if (count > 7U) count = 7U;
     if (ptCanPacket->u8len < (uint8_t)(count + 1U)) return;
     memcpy(&au8CanTpRxSn[offset], &ptCanPacket->au8data[1], count);
-    u16CanTpRxWaitTicks = 0U;
+    u32CanTpRxWaitMs = 0U;
     if (u8CanTpRxNext++ < u8CanTpRxPackets) return;
     u8CanTpRxNext = 0U;
     memset(cm, 0xFF, sizeof(cm));
@@ -2221,7 +2438,7 @@ static void ducar_can_receive_tp_dt(const t_can_packet *ptCanPacket,
     cm[6] = 0xF2U;
     cm[7] = 0U;
     (void)d_can_send(&can0, ducar_can_id_encode(DUCAR_CAN_PF_TP_CM,
-                     ptCanIdFields->u8Sa, DUCAR_CAN_BMS_A_ADDRESS),
+                     ptCanIdFields->u8Sa, g_ducar_can_bms_address),
                      D_CAN_ID_EXTENDED, cm, sizeof(cm));
     (void)ducar_can_queue_ack(app_param_set_manufacture_sn(au8CanTpRxSn,
                               u8CanTpRxLength) ? DUCAR_CAN_ACK : DUCAR_CAN_NAK,
@@ -2230,7 +2447,7 @@ static void ducar_can_receive_tp_dt(const t_can_packet *ptCanPacket,
 }
 
 /*
- * 处理PF=08基础控制：Data0=0时由Data1设置独立产品模式；
+ * 处理PF=08基础控制：Data0=0时由Data1设置独立产品模式，0F清除故障日志；
  * Data0=1/2仍为复位/关机，ACK发送完成后才执行动作。
  */
 static void ducar_can_receive_reset_command(const t_can_packet *ptCanPacket,
@@ -2243,14 +2460,16 @@ static void ducar_can_receive_reset_command(const t_can_packet *ptCanPacket,
     /* 复位/关机控制必须是完整8字节PC点对点扩展帧。 */
     if ((ptCanPacket->u8len != DUCAR_CAN_DATA_DLC) ||
         (!ducar_can_id_is_pc_source(ptCanIdFields)) ||
-        (ptCanIdFields->u8Ps != DUCAR_CAN_BMS_A_ADDRESS) ||
+        (ptCanIdFields->u8Ps != g_ducar_can_bms_address) ||
         (u8CanAckPending != 0U) ||
+        (u8CanLogClearAckPending != 0U) ||
+        (app_log_clear_get_status() == APP_LOG_CLEAR_PENDING) ||
         (eCanActionWaitingTx != DUCAR_CAN_ACTION_NONE))
     {
         return;
     }
 
-    /* Data0是控制命令：0设置模式、1复位、2关机。 */
+    /* Data0是控制命令：0设置模式、1复位、2关机、0F清除故障日志。 */
     u8Command = ptCanPacket->au8data[0];
     if (u8Command == 0x00U)
     {
@@ -2272,6 +2491,25 @@ static void ducar_can_receive_reset_command(const t_can_packet *ptCanPacket,
     {
         /* 记录ACK发送完成后执行关机。 */
         eRequestedAction = DUCAR_CAN_ACTION_POWER_OFF;
+    }
+    else if (u8Command == DUCAR_CAN_CMD_CLEAR_FAULT_LOG)
+    {
+        if (!ducar_can_transport_is_active() &&
+            !ducar_bms_uart_log_export_is_active() &&
+            app_log_clear_request())
+        {
+            /* 等日志任务完成Flash擦除后，再异步返回ACK。 */
+            u8CanLogClearAckDestination = ptCanIdFields->u8Sa;
+            u8CanLogClearAckPending = 1U;
+        }
+        else
+        {
+            (void)ducar_can_queue_ack(DUCAR_CAN_NAK,
+                                      ptCanIdFields->u8Sa,
+                                      u16FunctionCode,
+                                      DUCAR_CAN_ACTION_NONE);
+        }
+        return;
     }
     else
     {
@@ -2319,7 +2557,7 @@ static void ducar_can_receive_mos_command(const t_can_packet *ptCanPacket,
     /* MOS控制同样要求完整8字节PC点对点扩展帧。 */
     if ((ptCanPacket->u8len != DUCAR_CAN_DATA_DLC) ||
         (!ducar_can_id_is_pc_source(ptCanIdFields)) ||
-        (ptCanIdFields->u8Ps != DUCAR_CAN_BMS_A_ADDRESS) ||
+        (ptCanIdFields->u8Ps != g_ducar_can_bms_address) ||
         (u8CanAckPending != 0U) ||
         (eCanActionWaitingTx != DUCAR_CAN_ACTION_NONE))
     {
@@ -2378,7 +2616,7 @@ static void ducar_can_receive_unsupported_control(
     /* 只对完整、来源正确、目标正确的控制帧回复NAK。 */
     if ((ptCanPacket->u8len == DUCAR_CAN_DATA_DLC) &&
         ducar_can_id_is_pc_source(ptCanIdFields) &&
-        (ptCanIdFields->u8Ps == DUCAR_CAN_BMS_A_ADDRESS))
+        (ptCanIdFields->u8Ps == g_ducar_can_bms_address))
     {
         /* A00低功耗阈值及B00/C00调试注入当前没有对应业务接口，不写硬件或快照。 */
         (void)ducar_can_queue_ack(DUCAR_CAN_NAK,
@@ -2400,7 +2638,7 @@ static void ducar_can_receive_bus_control(
     if ((ptCanPacket->u8len != DUCAR_CAN_DATA_DLC) ||
         (!ducar_can_id_is_pc_source(ptCanIdFields)) ||
         ((ptCanIdFields->u8Ps != DUCAR_CAN_GLOBAL_ADDRESS) &&
-         (ptCanIdFields->u8Ps != DUCAR_CAN_BMS_A_ADDRESS)))
+         (ptCanIdFields->u8Ps != g_ducar_can_bms_address)))
     {
         return;
     }
@@ -2475,7 +2713,7 @@ static void ducar_can_receive_normal_pf(const t_can_packet *ptCanPacket,
         /* 活跃校准期间拒绝其他写操作和TP接收，不改变保护或MOS。 */
         return;
     }
-    /* 与GD7627一致：先看PF，再进入该报文类别的独立处理函数。 */
+    /* 先按本工程的PF分类规则分发，再进入对应报文类别的独立处理函数。 */
     /* PF决定后续解释方式，不能在这里直接按数据内容猜测协议。 */
     switch (ptCanIdFields->u8Pf)
     {
@@ -2523,7 +2761,7 @@ static void ducar_can_receive_normal_pf(const t_can_packet *ptCanPacket,
         case DUCAR_CAN_PF_CURRENT_CALIB:
             /* E700按DLC严格区分旧单点与CAL2。 */
             if (ducar_can_id_is_pc_source(ptCanIdFields) &&
-                (ptCanIdFields->u8Ps == DUCAR_CAN_BMS_A_ADDRESS))
+                (ptCanIdFields->u8Ps == g_ducar_can_bms_address))
             {
                 uint32_t raw = (uint32_t)ptCanPacket->au8data[0] |
                                ((uint32_t)ptCanPacket->au8data[1] << 8U) |
@@ -2570,7 +2808,7 @@ static void ducar_can_receive_normal_pf(const t_can_packet *ptCanPacket,
         case DUCAR_CAN_PF_SOC_WRITE:
             /* E200：Data0为主机请求SOC，U8整数百分比；其余字节保留并忽略。 */
             if (ducar_can_id_is_pc_source(ptCanIdFields) &&
-                (ptCanIdFields->u8Ps == DUCAR_CAN_BMS_A_ADDRESS))
+                (ptCanIdFields->u8Ps == g_ducar_can_bms_address))
             {
                 uint8_t requested_soc = 0U;
                 uint8_t accepted = 0U;
@@ -2603,7 +2841,7 @@ static void ducar_can_receive_normal_pf(const t_can_packet *ptCanPacket,
         case DUCAR_CAN_PF_CLEAR_SN:
             /* E300：共享参数页读改写，仅清除SN，产品模式保持不变。 */
             if (ducar_can_id_is_pc_source(ptCanIdFields) &&
-                (ptCanIdFields->u8Ps == DUCAR_CAN_BMS_A_ADDRESS))
+                (ptCanIdFields->u8Ps == g_ducar_can_bms_address))
             {
                 uint8_t ok = ((ptCanPacket->u8len >= 1U) &&
                               (ptCanPacket->au8data[0] == 0x01U)) ?
@@ -2617,7 +2855,7 @@ static void ducar_can_receive_normal_pf(const t_can_packet *ptCanPacket,
         case 0xE6U:
             /* E600：清AFE、PF锁存及软件故障，三步全部成功才ACK。 */
             if (ducar_can_id_is_pc_source(ptCanIdFields) &&
-                (ptCanIdFields->u8Ps == DUCAR_CAN_BMS_A_ADDRESS))
+                (ptCanIdFields->u8Ps == g_ducar_can_bms_address))
             {
                 uint8_t ok = 0U;
                 if ((ptCanPacket->u8len >= 1U) &&
@@ -2637,7 +2875,7 @@ static void ducar_can_receive_normal_pf(const t_can_packet *ptCanPacket,
         case 0xE9U:
             /* E900：Data0=1时让下一次BMS SOC周期执行OCV重算。 */
             if (ducar_can_id_is_pc_source(ptCanIdFields) &&
-                (ptCanIdFields->u8Ps == DUCAR_CAN_BMS_A_ADDRESS))
+                (ptCanIdFields->u8Ps == g_ducar_can_bms_address))
             {
                 app_bms_snapshot_t snapshot;
                 uint8_t ok = ((ptCanPacket->u8len >= 1U) &&
@@ -2653,7 +2891,7 @@ static void ducar_can_receive_normal_pf(const t_can_packet *ptCanPacket,
                 {
                     u8CanSocOcvAckPending = 1U;
                     u8CanSocOcvAckDestination = ptCanIdFields->u8Sa;
-                    u16CanSocOcvWaitTicks = 0U;
+                    u32CanSocOcvWaitMs = 0U;
                 }
                 else
                 {
@@ -2699,6 +2937,8 @@ void ducar_can_protocol_receive(const t_can_packet *ptCanPacket)
 
 /*
  * 普通协议TP发送状态机。
+ * RTS发送ID：0x18EC[目标地址][BMS地址]；DT发送ID：0x18EB[目标地址][BMS地址]。
+ * 默认目标为0x3A、BMS地址为0x16时分别为0x18EC3A16和0x18EB3A16。
  * 状态顺序为SEND_RTS -> WAIT_CTS -> SEND_DT -> WAIT_EOM；
  * 只有收到对端CTS后才按窗口发送DT，最后等待EOM ACK结束会话。
  */
@@ -2732,12 +2972,12 @@ static void ducar_can_tp_transmit_task(void)
         if (d_can_send(&can0,
                        ducar_can_id_encode(DUCAR_CAN_PF_TP_CM,
                                            u8CanTpDestination,
-                                           DUCAR_CAN_BMS_A_ADDRESS),
+                                           g_ducar_can_bms_address),
                        D_CAN_ID_EXTENDED,
                        au8CanData,
                        DUCAR_CAN_DATA_DLC))
         {
-            u16CanTpWaitTicks = 0U;
+            u32CanTpWaitMs = 0U;
             eCanTpState = DUCAR_CAN_TP_WAIT_CTS;
         }
         return;
@@ -2769,7 +3009,7 @@ static void ducar_can_tp_transmit_task(void)
     if (!d_can_send(&can0,
                     ducar_can_id_encode(DUCAR_CAN_PF_TP_DT,
                                         u8CanTpDestination,
-                                        DUCAR_CAN_BMS_A_ADDRESS),
+                                        g_ducar_can_bms_address),
                     D_CAN_ID_EXTENDED,
                     au8CanData,
                     DUCAR_CAN_DATA_DLC))
@@ -2778,7 +3018,7 @@ static void ducar_can_tp_transmit_task(void)
     }
 
     /* 当前DT发送成功，推进到下一个序号。 */
-    u16CanTpWaitTicks = 0U;
+    u32CanTpWaitMs = 0U;
     u8CanTpNextPacket++;
     /* 消耗本次CTS允许的一个发送配额。 */
     u8CanTpBurstPackets--;
@@ -2805,6 +3045,7 @@ void ducar_can_control_reply_task(void)
     ducar_can_action_t eActionToRun;
     uint8_t soc_write_status;
     uint8_t soc_ocv_save_status;
+    app_log_clear_status_t eLogClearStatus;
 
     if (u8CanIapSilenceActive != 0U)
     {
@@ -2812,6 +3053,26 @@ void ducar_can_control_reply_task(void)
     }
 
     ducar_can_cal2_reply_task();
+
+    /* PF08/0F在日志Flash区格式化完成后返回结果，避免ACK早于实际清除。 */
+    if (u8CanLogClearAckPending != 0U)
+    {
+        eLogClearStatus = app_log_clear_get_status();
+        if ((eLogClearStatus == APP_LOG_CLEAR_SUCCESS) ||
+            (eLogClearStatus == APP_LOG_CLEAR_FAILED))
+        {
+            if (ducar_can_queue_ack((eLogClearStatus == APP_LOG_CLEAR_SUCCESS) ?
+                                    DUCAR_CAN_ACK : DUCAR_CAN_NAK,
+                                    u8CanLogClearAckDestination,
+                                    (uint16_t)((uint16_t)DUCAR_CAN_PF_RESET << 8U),
+                                    DUCAR_CAN_ACTION_NONE))
+            {
+                u8CanLogClearAckPending = 0U;
+                app_log_clear_complete();
+                return;
+            }
+        }
+    }
 
     /* E900只在BMS任务完成OCV重算且Flash保存成功后回复ACK。 */
     if (u8CanSocOcvAckPending != 0U)
@@ -2822,7 +3083,7 @@ void ducar_can_control_reply_task(void)
         soc_ocv_save_status = app_bms_soc_ocv_save_status();
 
         /* 超时结果一旦确定，即使随后OCV完成也仍返回本次超时NAK。 */
-        if (u16CanSocOcvWaitTicks >= 5000U)
+        if (u32CanSocOcvWaitMs >= 5000U)
         {
             result_ready = true;
         }
@@ -2832,10 +3093,6 @@ void ducar_can_control_reply_task(void)
             result_ready = true;
             ack_status = (soc_ocv_save_status == APP_BMS_SOC_OCV_SAVED) ?
                          DUCAR_CAN_ACK : DUCAR_CAN_NAK;
-        }
-        else if (++u16CanSocOcvWaitTicks >= 5000U)
-        {
-            result_ready = true;
         }
 
         /* 只有结果真正排进ACK槽后才能释放E900；忙时先发送已排队的其他ACK。 */
@@ -2891,12 +3148,12 @@ void ducar_can_control_reply_task(void)
             eCanActionWaitingTx = DUCAR_CAN_ACTION_NONE;
         }
         /* 邮箱未空闲时累计等待时间。 */
-        else if (++u8CanActionWaitTicks >= DUCAR_CAN_ACK_WAIT_MAX_TICKS)
+        else if (u32CanActionWaitMs >= DUCAR_CAN_ACK_WAIT_MAX_MS)
         {
             if ((eCanActionWaitingTx == DUCAR_CAN_ACTION_RESET) &&
                 !app_bms_soc_save_for_transition())
             {
-                u8CanActionWaitTicks = DUCAR_CAN_ACK_WAIT_MAX_TICKS - 1U;
+                u32CanActionWaitMs = DUCAR_CAN_ACK_WAIT_MAX_MS;
                 return;
             }
             /* TX硬件异常时最多等100ms，不让复位/关机命令永久挂起。 */
@@ -2909,7 +3166,7 @@ void ducar_can_control_reply_task(void)
         }
 
         /* 无论正常完成还是超时，都清除动作等待计数。 */
-        u8CanActionWaitTicks = 0U;
+        u32CanActionWaitMs = 0U;
         if (eActionToRun == DUCAR_CAN_ACTION_RESET)
         {
             /* 执行复位动作。 */
@@ -2937,18 +3194,18 @@ void ducar_can_control_reply_task(void)
             {
                 /* 如果有后续动作，转为等待发送完成状态。 */
                 eCanActionWaitingTx = eCanActionAfterAck;
-                u8CanActionWaitTicks = 0U;
+                u32CanActionWaitMs = 0U;
             }
             /* 清除一次性动作缓存，避免下一次ACK重复执行。 */
             eCanActionAfterAck = DUCAR_CAN_ACTION_NONE;
         }
         /* ACK提交失败时累计重试次数。 */
-        else if (++u8CanActionWaitTicks >= DUCAR_CAN_ACK_WAIT_MAX_TICKS)
+        else if (u32CanActionWaitMs >= DUCAR_CAN_ACK_WAIT_MAX_MS)
         {
             /* ACK在100ms内无法进入邮箱时丢弃回复，不执行其关联复位/关机动作。 */
             u8CanAckPending = 0U;
             eCanActionAfterAck = DUCAR_CAN_ACTION_NONE;
-            u8CanActionWaitTicks = 0U;
+            u32CanActionWaitMs = 0U;
         }
         return;
     }

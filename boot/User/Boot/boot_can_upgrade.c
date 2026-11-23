@@ -7,12 +7,14 @@
 
 #include "Boot/boot_app.h"
 #include "Boot/boot_config.h"
+#include "Boot/boot_protocol.h"
 #include "Boot/boot_upgrade.h"
 #include "Hal_Driver/boot_flash.h"
 #include "Hal_Driver/boot_timer.h"
 #include "Hal_Driver/boot_watchdog.h"
 #include "Hal_Driver/boot_can.h"
 #include "Protocol/ducar_iap_protocol.h"
+#include "UDS/UDSLogic/uds_upgrade.h"
 #include "n32g45x.h"
 #include <string.h>
 
@@ -23,6 +25,7 @@
 #define BOOT_CAN_PAGE_PACKET_COUNT      ((uint8_t)19U)
 #define BOOT_CAN_PACKAGE_HEADER_SIZE    ((uint32_t)128UL)
 #define BOOT_CAN_TIMEOUT_MS             ((uint32_t)10000UL)
+#define BOOT_CAN_PAGE_TIMEOUT_MS        ((uint32_t)500UL)
 #define BOOT_CAN_FINISH_TIMEOUT_MS      ((uint32_t)1000UL)
 #define BOOT_CAN_VERSION_T              ((uint8_t)0xFDU)
 #define BOOT_CAN_VERSION_V              ((uint8_t)0xFEU)
@@ -53,6 +56,9 @@ static uint32_t s_boot_can_last_activity;
 static uint8_t s_boot_can_reset_pending;
 static uint32_t s_boot_can_tx_failure_baseline;
 static uint8_t s_boot_can_page_buffer[BOOT_CAN_PAGE_MESSAGE_LEN];
+static uint8_t s_boot_can_last_page_valid;
+static uint32_t s_boot_can_last_page_address;
+static uint8_t s_boot_can_last_page_buffer[BOOT_CAN_PAGE_MESSAGE_LEN];
 
 /* 计算128字节升级头加按128字节对齐后的固件区总长度。 */
 static uint32_t boot_can_package_size(uint32_t firmware_size)
@@ -95,9 +101,39 @@ static void boot_can_reset_state(void)
     s_boot_can_reset_pending = 0U;
     s_boot_can_tx_failure_baseline = 0UL;
     memset(s_boot_can_page_buffer, 0xFF, sizeof(s_boot_can_page_buffer));
+    s_boot_can_last_page_valid = 0U;
+    s_boot_can_last_page_address = 0UL;
+    memset(s_boot_can_last_page_buffer, 0xFF, sizeof(s_boot_can_last_page_buffer));
 }
 
-/* 通过底层CAN回调发送BOOT协议帧。 */
+/* 只丢弃未完成页，已写入APP2的页和整包进度保持不变。 */
+static void boot_can_discard_page(void)
+{
+    s_boot_can_state = BOOT_CAN_STATE_WAIT_PAGE;
+    s_boot_can_page_length = 0U;
+    s_boot_can_page_packets = 0U;
+    s_boot_can_expected_packet = 0U;
+    memset(s_boot_can_page_buffer, 0xFF, sizeof(s_boot_can_page_buffer));
+}
+
+/* 记录刚提交的完整页，用于EOM丢失后的重复RTS/DT幂等确认。 */
+static void boot_can_remember_committed_page(void)
+{
+    s_boot_can_last_page_address = ducar_can_read_u32_le(s_boot_can_page_buffer);
+    memcpy(s_boot_can_last_page_buffer,
+           s_boot_can_page_buffer,
+           sizeof(s_boot_can_last_page_buffer));
+    s_boot_can_last_page_valid = 1U;
+}
+
+/* 当前CAN升级占用APP2，FINISH_PENDING同样不可被UART或UDS抢占。 */
+bool boot_can_upgrade_is_busy(void)
+{
+    return (s_boot_can_state != BOOT_CAN_STATE_IDLE) ||
+           (s_boot_can_reset_pending != 0U);
+}
+
+/* 通过底层CAN回调发送BOOT协议帧，发送ID由frame中的ID指定。 */
 static uint8_t boot_can_send(const ducar_can_frame_t *frame)
 {
     return ((s_boot_can_tx != 0) && (frame != 0) && s_boot_can_tx(frame)) ? 1U : 0U;
@@ -111,7 +147,7 @@ static void boot_can_frame_init(ducar_can_frame_t *frame, uint8_t pf, uint8_t de
                            destination, DUCAR_CAN_BMS_A_ADDRESS));
 }
 
-/* 回复E1控制结果，并在Data1标识当前响应来自BOOT区域。 */
+/* 发送ID：0x18E8[目标地址]16，目标为0x3A时是0x18E83A16；E1控制结果。 */
 static uint8_t boot_can_send_e1_response(uint8_t destination, uint8_t status)
 {
     ducar_can_frame_t tCanFrame;
@@ -128,7 +164,7 @@ static uint8_t boot_can_send_e1_response(uint8_t destination, uint8_t status)
     return boot_can_send(&tCanFrame);
 }
 
-/* 对主机RTS回复CTS，允许本页19个DT包从序号1开始发送。 */
+/* 发送ID：0x18EC[目标地址]16，目标为0x3A时是0x18EC3A16；回复CTS。 */
 static uint8_t boot_can_send_cts(uint8_t destination)
 {
     ducar_can_frame_t tCanFrame;
@@ -145,7 +181,7 @@ static uint8_t boot_can_send_cts(uint8_t destination)
     return boot_can_send(&tCanFrame);
 }
 
-/* 一页写入完成后回复EOM，通知主机当前页已接收。 */
+/* 发送ID：0x18EC[目标地址]16，目标为0x3A时是0x18EC3A16；页完成EOM。 */
 static uint8_t boot_can_send_eom(uint8_t destination)
 {
     ducar_can_frame_t tCanFrame;
@@ -162,7 +198,7 @@ static uint8_t boot_can_send_eom(uint8_t destination)
     return boot_can_send(&tCanFrame);
 }
 
-/* 页格式、页序、Flash或超时异常时终止当前TP会话。 */
+/* 发送ID：0x18EC[目标地址]16，目标为0x3A时是0x18EC3A16；异常终止TP。 */
 static uint8_t boot_can_send_abort(uint8_t destination)
 {
     ducar_can_frame_t tCanFrame;
@@ -180,7 +216,7 @@ static uint8_t boot_can_send_abort(uint8_t destination)
 }
 
 /*
- * 回复F200版本查询。
+ * 发送ID：0x18F20016，回复F200版本查询。
  * BOOT不读取APP版本参数，避免BOOT处于独立升级状态时依赖APP数据；
  * 按当前协议约定，BOOT固定返回FD FE FF，剩余字节保持0xFF。
  */
@@ -336,6 +372,15 @@ static bool boot_can_write_page(void)
     uint32_t u32LastFlashPage;
 
     u32PageAddress = ducar_can_read_u32_le(s_boot_can_page_buffer);
+    if ((s_boot_can_last_page_valid != 0U) &&
+        (u32PageAddress == s_boot_can_last_page_address) &&
+        (memcmp(s_boot_can_page_buffer,
+                s_boot_can_last_page_buffer,
+                sizeof(s_boot_can_page_buffer)) == 0))
+    {
+        /* 主机重复发送已提交页时不重复写Flash或增加进度，只由调用者重发EOM。 */
+        return true;
+    }
     if (s_boot_can_header_received == 0U)
     {
         /* 首页只能是偏移0或APP1绝对首地址；长度尚未可信，不用它计算范围。 */
@@ -351,6 +396,7 @@ static bool boot_can_write_page(void)
         }
 
         s_boot_can_package_received += BOOT_CAN_PAGE_SIZE;
+        boot_can_remember_committed_page();
         return true;
     }
 
@@ -388,6 +434,7 @@ static bool boot_can_write_page(void)
 
     s_boot_can_firmware_received += u32WriteLength;
     s_boot_can_package_received += BOOT_CAN_PAGE_SIZE;
+    boot_can_remember_committed_page();
     return true;
 }
 
@@ -407,7 +454,10 @@ static void boot_can_handle_e1(const ducar_can_frame_t *frame,
             (void)boot_can_send_e1_response(fields->sa, DUCAR_CAN_ACK);
             break;
         case 0x02U:
-            if (s_boot_can_state == BOOT_CAN_STATE_FINISH_PENDING)
+            if ((s_boot_can_state == BOOT_CAN_STATE_FINISH_PENDING) ||
+                boot_protocol_is_busy() ||
+                uds_upgrade_app1_is_busy() ||
+                (boot_upgrade_get_flag() == BOOT_UPGRADE_FLAG_NEED_MOVE))
             {
                 (void)boot_can_send_e1_response(fields->sa, DUCAR_CAN_NAK);
                 break;
@@ -500,7 +550,9 @@ static void boot_can_handle_rts(const ducar_can_frame_t *frame,
     s_boot_can_last_activity = boot_timer_get_ms();
     if (!boot_can_send_cts(fields->sa))
     {
-        boot_can_reset_state();
+        /* CTS发送暂时失败时仅丢弃本页上下文，保留升级进度供主机重发RTS。 */
+        boot_can_discard_page();
+        s_boot_can_last_activity = boot_timer_get_ms();
     }
 }
 
@@ -519,8 +571,9 @@ static void boot_can_handle_dt(const ducar_can_frame_t *frame,
     }
     if (frame->data[0] != s_boot_can_expected_packet)
     {
-        (void)boot_can_send_abort(fields->sa);
-        boot_can_reset_state();
+        /* 页内DT失序只丢弃当前页；已确认写入的APP2页仍有效。 */
+        s_boot_can_last_activity = boot_timer_get_ms();
+        boot_can_discard_page();
         return;
     }
     u16PageBufferOffset = (uint16_t)((uint16_t)(s_boot_can_expected_packet - 1U) * 7U);
@@ -528,18 +581,24 @@ static void boot_can_handle_dt(const ducar_can_frame_t *frame,
     u8PageCopyLength = (u16PageBytesRemaining > 7U) ? 7U : (uint8_t)u16PageBytesRemaining;
     if (frame->dlc < (uint8_t)(u8PageCopyLength + 1U))
     {
-        (void)boot_can_send_abort(fields->sa);
-        boot_can_reset_state();
+        s_boot_can_last_activity = boot_timer_get_ms();
+        boot_can_discard_page();
         return;
     }
     memcpy(&s_boot_can_page_buffer[u16PageBufferOffset], &frame->data[1], u8PageCopyLength);
     s_boot_can_last_activity = boot_timer_get_ms();
     if (s_boot_can_expected_packet >= s_boot_can_page_packets)
     {
-        if ((!boot_can_write_page()) || (!boot_can_send_eom(fields->sa)))
+        if (!boot_can_write_page())
         {
             (void)boot_can_send_abort(fields->sa);
             boot_can_reset_state();
+            return;
+        }
+        if (!boot_can_send_eom(fields->sa))
+        {
+            /* 页已提交但EOM未发出；等待主机重传RTS/数据，重复页将只补发EOM。 */
+            s_boot_can_state = BOOT_CAN_STATE_WAIT_PAGE;
             return;
         }
         s_boot_can_state = BOOT_CAN_STATE_WAIT_PAGE;
@@ -562,6 +621,14 @@ void boot_can_upgrade_task(void)
 {
     uint32_t u32CurrentTimeMs = boot_timer_get_ms();
     uint8_t u8CanTxIdle;
+
+    if ((s_boot_can_state == BOOT_CAN_STATE_RECEIVING_PAGE) &&
+        ((uint32_t)(u32CurrentTimeMs - s_boot_can_last_activity) >=
+         BOOT_CAN_PAGE_TIMEOUT_MS))
+    {
+        /* 页级超时保留整包会话，主机可重新RTS并从DT1发送这一页。 */
+        boot_can_discard_page();
+    }
 
     if (((s_boot_can_state == BOOT_CAN_STATE_RECEIVING_PAGE) ||
          (s_boot_can_state == BOOT_CAN_STATE_WAIT_PAGE)) &&

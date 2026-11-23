@@ -633,51 +633,92 @@ m_flash_wl_status_t m_flash_wl_init(m_flash_wl_area_t *area, const m_flash_wl_cf
     return eInitStatus;
 }
 
-/* 格式化分区：擦除所有页，并重新创建第0页页头。 */
+/* 格式化单页；最后一页擦除后重建运行状态和第0页页头。 */
+static m_flash_wl_status_t m_flash_wl_format_step_unlocked(m_flash_wl_area_t *area,
+                                                           const m_flash_wl_cfg_t *cfg,
+                                                           uint16_t page_index,
+                                                           bool *complete)
+{
+    m_flash_wl_status_t eFormatStatus;
+
+    if ((area == NULL) || (complete == NULL))
+    {
+        return M_FLASH_WL_ERR_PARAM;
+    }
+
+    eFormatStatus = m_flash_wl_validate_cfg(cfg);
+    if (eFormatStatus != M_FLASH_WL_OK)
+    {
+        return eFormatStatus;
+    }
+
+    if (page_index >= cfg->page_count)
+    {
+        return M_FLASH_WL_ERR_PARAM;
+    }
+
+    *complete = false;
+    d_watchdog_feed();
+    eFormatStatus = m_flash_wl_erase_page(m_flash_wl_page_addr(cfg, page_index));
+    if (eFormatStatus != M_FLASH_WL_OK)
+    {
+        return eFormatStatus;
+    }
+
+    if ((uint16_t)(page_index + 1U) < cfg->page_count)
+    {
+        return M_FLASH_WL_OK;
+    }
+
+    memset(area, 0, sizeof(*area));
+    area->cfg = *cfg;
+    area->records_per_page = m_flash_wl_calc_records_per_page(cfg->record_size);
+    area->payload_size = cfg->record_size - M_FLASH_WL_RECORD_HEADER_SIZE - M_FLASH_WL_RECORD_COMMIT_SIZE;
+    area->latest_addr = M_FLASH_WL_INVALID_ADDR;
+    area->write_addr = cfg->start_addr + M_FLASH_WL_PAGE_HEADER_SIZE;
+    area->current_page = 0U;
+    area->page_seq = 0U;
+    area->next_record_seq = 0U;
+
+    eFormatStatus = m_flash_wl_write_page_header(cfg, 0U, 0U, 1U);
+
+    if (eFormatStatus == M_FLASH_WL_OK)
+    {
+        area->initialized = true;
+        *complete = true;
+    }
+
+    return eFormatStatus;
+}
+
+/* 格式化分区：同步擦除所有页，并重新创建第0页页头。 */
 static m_flash_wl_status_t m_flash_wl_format_unlocked(m_flash_wl_area_t *area, const m_flash_wl_cfg_t *cfg)
 {
-    m_flash_wl_status_t eFormatStatus; /* 保存操作结果。 */
-    uint16_t u16PageIndex;              /* 页循环下标。 */
+    m_flash_wl_status_t eFormatStatus;
+    bool bComplete = false;
+    uint16_t u16PageIndex;
 
-    if(area == NULL) /* 运行状态对象不能为空。 */
+    if (area == NULL)
     {
-        return M_FLASH_WL_ERR_PARAM; /* 返回参数错误。 */
+        return M_FLASH_WL_ERR_PARAM;
     }
 
-    eFormatStatus = m_flash_wl_validate_cfg(cfg); /* 先检查配置是否合法。 */
-    if(eFormatStatus != M_FLASH_WL_OK) /* 如果配置不合法。 */
+    eFormatStatus = m_flash_wl_validate_cfg(cfg);
+    if (eFormatStatus != M_FLASH_WL_OK)
     {
-        return eFormatStatus; /* 返回具体错误。 */
+        return eFormatStatus;
     }
 
-    for(u16PageIndex = 0U; u16PageIndex < cfg->page_count; u16PageIndex++) /* 遍历分区内所有页。 */
+    for (u16PageIndex = 0U; u16PageIndex < cfg->page_count; u16PageIndex++)
     {
-        d_watchdog_feed(); /* 格式化会连续擦除多页，逐页喂狗。 */
-        eFormatStatus = m_flash_wl_erase_page(m_flash_wl_page_addr(cfg, u16PageIndex)); /* 擦除当前页。 */
-        if(eFormatStatus != M_FLASH_WL_OK) /* 如果任意一页擦除失败。 */
+        eFormatStatus = m_flash_wl_format_step_unlocked(area, cfg, u16PageIndex, &bComplete);
+        if (eFormatStatus != M_FLASH_WL_OK)
         {
-            return eFormatStatus; /* 返回错误。 */
+            return eFormatStatus;
         }
     }
 
-    memset(area, 0, sizeof(*area)); /* 擦完后清空运行状态。 */
-    area->cfg = *cfg; /* 保存配置。 */
-    area->records_per_page = m_flash_wl_calc_records_per_page(cfg->record_size); /* 重新计算每页记录数。 */
-    area->payload_size = cfg->record_size - M_FLASH_WL_RECORD_HEADER_SIZE - M_FLASH_WL_RECORD_COMMIT_SIZE; /* 重新计算业务数据最大长度。 */
-    area->latest_addr = M_FLASH_WL_INVALID_ADDR; /* 格式化后没有最新记录。 */
-    area->write_addr = cfg->start_addr + M_FLASH_WL_PAGE_HEADER_SIZE; /* 写指针指向第0页页头后。 */
-    area->current_page = 0U; /* 当前页为第0页。 */
-    area->page_seq = 0U; /* 页序号从0开始。 */
-    area->next_record_seq = 0U; /* 记录序号从0开始。 */
-
-    eFormatStatus = m_flash_wl_write_page_header(cfg, 0U, 0U, 1U); /* 写第0页页头，格式化算作擦除过一次。 */
-
-    if(eFormatStatus == M_FLASH_WL_OK) /* 如果页头写成功。 */
-    {
-        area->initialized = true; /* 标记初始化完成。 */
-    }
-
-    return eFormatStatus; /* 返回格式化结果。 */
+    return bComplete ? M_FLASH_WL_OK : M_FLASH_WL_ERR_FLASH;
 }
 
 /* 格式化分区：所有页擦除和页头重建作为一个Flash事务执行。 */
@@ -691,6 +732,28 @@ m_flash_wl_status_t m_flash_wl_format(m_flash_wl_area_t *area, const m_flash_wl_
     }
 
     eFormatStatus = m_flash_wl_format_unlocked(area, cfg);
+    d_flash_release();
+    return eFormatStatus;
+}
+
+/* 分页格式化：每次仅擦一页，供周期任务渐进清理大分区，减小连续阻塞。 */
+m_flash_wl_status_t m_flash_wl_format_step(m_flash_wl_area_t *area, const m_flash_wl_cfg_t *cfg,
+                                           uint16_t page_index, bool *complete)
+{
+    m_flash_wl_status_t eFormatStatus;
+
+    if (complete == NULL)
+    {
+        return M_FLASH_WL_ERR_PARAM;
+    }
+    *complete = false;
+
+    if (!d_flash_acquire(D_FLASH_MUTEX_TIMEOUT_MS))
+    {
+        return M_FLASH_WL_ERR_BUSY;
+    }
+
+    eFormatStatus = m_flash_wl_format_step_unlocked(area, cfg, page_index, complete);
     d_flash_release();
     return eFormatStatus;
 }

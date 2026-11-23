@@ -20,6 +20,8 @@
 void BMS_Task(void const *argument);
 /* 仅由BMS任务调用，保存并回读完整SOC状态；关机前必须成功。 */
 bool app_bms_soc_flash_save(void);
+/* 请求BMS任务持久化当前SOC状态；用于通信任务修改SOC锁存后避免掉电恢复旧值。 */
+void app_bms_soc_flash_save_request(void);
 /* 通信任务在升级或复位交接前保存一致SOC；进行SOC写入/校准时拒绝。 */
 bool app_bms_soc_save_for_transition(void);
 bool app_bms_force_soc_ocv(void);

@@ -23,7 +23,7 @@
  * 输出说明：
  *   1. output：通过 app_h_power_manage_get_output() 拷出本轮 MOS/efuse 输出；
  *      外部不得获取模块内部输出指针。
- *   2. tstat：模块内部保存的只读运行状态，包含充放电路径允许状态和 MOS 实际反馈。
+ *   2. tstat：模块内部保存的只读运行状态，含路径许可、AFE反馈和PDMOS命令镜像。
  *   3. tpdsg：模块内部保存的只读预放电状态，供调试和迁移观察。
  *
  * 调用方法：
@@ -65,10 +65,10 @@ typedef enum
     APP_H_POWER_MOS_SELECT_DISCHARGE = 3U  /* 放电MOS。 */
 } app_h_power_manage_mos_select_t;
 
-/* MOS 控制来源优先级，编号越小优先级越高；关机强制关断最高，远程命令高于一般业务控制。 */
+/* 强制来源之间编号越小优先级越高；电流旁路与强制命令的先后顺序见各MOS控制函数。 */
 typedef enum
 {
-    MF_Poweroff = 0,  /* 关机流程强制 MOS，必须高于会请求打开MOS的来源。 */
+    MF_Poweroff = 0,  /* 关机强制源，在强制命令数组内优先级最高。 */
     MF_Remote,        /* V0.8远程控制优先于保护与一般业务请求。 */
     MF_ZS_ChargeStop, /* 宗申停充完成/超时后强制关闭充电MOS。 */
     MF_Calib,     /* 校准流程强制 MOS。 */
@@ -106,13 +106,14 @@ typedef struct
 {
     uint8_t u8pdsg_enable;            /* PDSG 预放电使能：1 使能，0 禁用。 */
 
-    int8_t i8cmos_ctl_det;            /* 充电检测条件。 */
-    int8_t i8cmos_ctl_auth;           /* 充电授权条件。 */
-    int8_t i8dmos_ctl_det;            /* 放电检测条件。 */
-    int8_t i8dmos_ctl_auth;           /* 放电授权条件。 */
+    int8_t i8cmos_ctl_det;            /* 充电检测软件许可；并联时可由并联阶段机更新。 */
+    int8_t i8cmos_ctl_auth;           /* 充电授权软件许可。 */
+    int8_t i8dmos_ctl_det;            /* 放电检测软件许可，不是DETD引脚；并联时可更新。 */
+    int8_t i8dmos_ctl_auth;           /* 放电授权软件许可。 */
 
-    uint8_t u8cmos_fault_forbid;       /* 充电故障禁止条件；最高优先级远程强制开命令可覆盖。 */
-    uint8_t u8dmos_fault_forbid;       /* 放电故障禁止条件；最高优先级远程强制开命令可覆盖。 */
+    uint8_t u8cmos_fault_forbid;       /* 充电保护、通用故障或PF故障；电流/强制命令可按规则覆盖。 */
+    uint8_t u8dmos_fault_forbid;       /* 放电保护、通用故障或PF故障；电流/强制命令可按规则覆盖。 */
+    uint8_t u8dmos_reverse_current_forbid; /* 无强制开启时，通用/PF故障禁止正向电流旁路。 */
 
     int8_t i8cmos_ctl_force[MF_Max];  /* 充电 MOS 强制命令数组。 */
     int8_t i8dmos_ctl_force[MF_Max];  /* 放电 MOS 强制命令数组。 */
@@ -122,27 +123,27 @@ typedef struct
 /* 模块输出：包含三路 MOS和当前 efuse 命令，保持现有观察接口兼容。 */
 typedef struct
 {
-    uint8_t u8cmos_ctl;   /* 本轮计算得到的 CMOS 输出命令。 */
-    uint8_t u8dmos_ctl;   /* 本轮计算得到的 DMOS 输出命令。 */
-    uint8_t u8pdmos_ctl;  /* 本轮计算得到的 PDMOS 输出命令。 */
+    uint8_t u8cmos_ctl;   /* 本轮CMOS命令：1闭合，0断开；不代表实际反馈。 */
+    uint8_t u8dmos_ctl;   /* 本轮DMOS命令：1闭合，0断开；不代表实际反馈。 */
+    uint8_t u8pdmos_ctl;  /* 本轮PDMOS命令：1闭合，0断开。 */
     uint8_t u8efuse_ctl;  /* 本轮计算得到的二级熔断输出命令。 */
 } app_h_power_manage_output_t;
 
-/* 只读运行状态：包含路径允许状态和 MOS 实际反馈。 */
+/* 只读运行状态：包含路径许可、AFE反馈和PDMOS命令镜像。 */
 typedef struct
 {
-    uint8_t u8chg_status;    /* 充电路径当前是否允许。 */
-    uint8_t u8dsg_path_allowed; /* 整个放电路径当前是否允许启动。 */
-    uint8_t u8chgmos_state;  /* 充电 MOS 实际反馈状态。 */
-    uint8_t u8dsgmos_state;  /* 放电 MOS 实际反馈状态。 */
-    uint8_t u8pdsgmos_state; /* 预放 MOS 实际输出状态。 */
+    uint8_t u8chg_status;    /* 充电控制状态，与本轮CMOS命令对应，不是AFE反馈。 */
+    uint8_t u8dsg_path_allowed; /* 正常放电/预放资格；正电流旁路可在其为0时闭合DMOS。 */
+    uint8_t u8chgmos_state;  /* 最近一次有效AFE充电MOS反馈，1闭合，0断开。 */
+    uint8_t u8dsgmos_state;  /* 最近一次有效AFE放电MOS反馈，1闭合，0断开。 */
+    uint8_t u8pdsgmos_state; /* PDMOS软件命令镜像，并非独立的硬件反馈。 */
 } app_h_power_manage_status_t;
 
 /* 只读 PDSG 状态：供调试和故障定位使用。 */
 typedef struct
 {
-    uint8_t u8step;         /* PDSG 状态机步骤。 */
-    int8_t i8dmos_ctl_pdsg; /* PDSG 流程给予 DMOS 的允许命令。 */
+    uint8_t u8step;         /* PDSG步骤：IDLE等待、DELAY计时、DMOS允许主MOS闭合。 */
+    int8_t i8dmos_ctl_pdsg; /* 正常流程中PDSG给予DMOS的闭合许可，不是实际输出。 */
 } app_h_power_manage_pdsg_t;
 
 /*
@@ -166,7 +167,7 @@ typedef struct _app_h_power_manage_t
     int8_t last_cmos_cmd;               /* 上一轮已下发 CMOS 命令缓存。 */
     int8_t last_dmos_cmd;               /* 上一轮已下发 DMOS 命令缓存。 */
     int8_t last_pdmos_cmd;              /* 上一轮已下发 PDMOS 命令缓存。 */
-    uint8_t wakeup_fresh_sample_required;/* 等待唤醒后新样本时保持原MOS输出，禁止新增闭合。 */
+    uint8_t wakeup_fresh_sample_required;/* 唤醒后等待新样本；保持分支仍可执行电流旁路或关断。 */
     uint8_t wakeup_fresh_sample_seen;    /* 新样本已供至少一轮控制/故障计算使用。 */
     uint8_t remote_mos_timer_active[3];  /* 三路远程MOS命令是否正在按RTC计时。 */
     uint8_t initialized;                /* 是否已完成初始化。 */
@@ -201,7 +202,8 @@ void app_h_power_manage_set_zs_charge_stop_override(uint8_t enable);
 
 /*
  * CAN等远程协议的唯一MOS命令入口：只写最高业务优先级的MF_Remote请求，实际下发仍在
- * 10ms任务中经过数据、检测和端口门控。保护故障不屏蔽该远程请求；关机强制关断仍优先。
+ * 10ms任务中经过电流旁路、数据、检测和端口门控；关机源在强制命令数组中优先级最高，
+ * 但电流旁路可能先于强制关断生效，详见各MOS控制函数。
  * u8DurationMin为1字节分钟数（0按默认1分钟，最大255分钟）；命令到期后恢复自动仲裁。
  * u8MosSelect只能是PRECHARGE/CHARGE/DISCHARGE，eMosCommand只能是APP_MOS_OFF或APP_MOS_ON。
  */

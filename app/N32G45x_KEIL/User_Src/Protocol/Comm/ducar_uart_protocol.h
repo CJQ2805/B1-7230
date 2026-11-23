@@ -57,7 +57,8 @@
 #define DUCAR_BMS_CMD_GET_RTC                   ((uint8_t)0x64U)
 #define DUCAR_BMS_CMD_SET_BMS_SHUTDOWN          ((uint8_t)0x66U)
 #define DUCAR_BMS_CMD_SET_BMS_RESET             ((uint8_t)0x67U)
-#define DUCAR_BMS_CMD_SET_BMS_FAULT_CLEAR       ((uint8_t)0x68U)
+#define DUCAR_BMS_CMD_SET_BMS_FAULT_CLEAR       ((uint8_t)0x68U) /* Data0=00清当前故障；Data0=0F清故障日志。 */
+#define DUCAR_BMS_FAULT_CLEAR_LOG_SUBCMD        ((uint8_t)0x0FU)
 #define DUCAR_BMS_CMD_SOC_FORCE_OCV              ((uint8_t)0x69U)
 #define DUCAR_BMS_CMD_SET_SOC                    ((uint8_t)0x70U)
 #define DUCAR_BMS_CMD_SET_CURRENT_CALIBRATION    ((uint8_t)0x71U) /* 写入一个实际电流校准点。 */
@@ -96,5 +97,6 @@ void ducar_uart_protocol_init(void);
 void ducar_bms_handle_frame(const ducar_bms_frame_t *frame);
 bool ducar_bms_send_status(uint8_t cmd, uint8_t status);
 void ducar_bms_uart_log_task(void);
+bool ducar_bms_uart_log_export_is_active(void);
 
 #endif

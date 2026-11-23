@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 #define Module_Major_Version_APP_Log    1
-#define Module_Minor_Version_APP_Log    2
+#define Module_Minor_Version_APP_Log    3
 
 #define LOG_CHGDSG_NUM                  5U
 #define LOG_RTD_PAYLOAD_SIZE            70U  /* 实时快照业务结构体固定70字节。 */
@@ -30,6 +30,15 @@ typedef enum
     APP_LOG_FLUSH_PENDING,
     APP_LOG_FLUSH_FAILED
 } app_log_flush_status_t;
+
+/* 故障日志清除状态；CAN命令等待Flash操作完成后再返回ACK/NAK。 */
+typedef enum
+{
+    APP_LOG_CLEAR_IDLE = 0U,
+    APP_LOG_CLEAR_PENDING,
+    APP_LOG_CLEAR_SUCCESS,
+    APP_LOG_CLEAR_FAILED
+} app_log_clear_status_t;
 
 /* LOG记录类型，底层均衡擦写只负责存字节，上层用这个区分数据含义。 */
 typedef enum
@@ -157,7 +166,7 @@ typedef union
         uint32_t chg_in_stu    : 1; /* 充电器接入信号。 */
         uint32_t id1_stu       : 1; /* ID1状态。 */
         uint32_t id2_stu       : 1; /* ID2状态。 */
-        uint32_t bmr_stu       : 1; /* BMR状态。 */
+        uint32_t u32ParallelPeerDetected       : 1; /* 是否检测到并联对端。 */
         uint32_t heat_stu      : 1; /* 加热状态。 */
         uint32_t chg_mos_s     : 1; /* 充电MOS命令/状态。 */
         uint32_t dsg_mos_s     : 1; /* 放电MOS命令/状态。 */
@@ -286,6 +295,11 @@ void app_log_capture_reset_flags(void);
 void app_log_task(void);
 /* 请求保存一次实时快照；成功返回true，失败时不入队；只入队、不在调用现场写Flash。 */
 bool app_log_request_snapshot(log_trigger_t trigger);
+/* 请求清除已存故障日志和清除请求前的待写快照；擦除由SaveLog_Task异步执行。 */
+bool app_log_clear_request(void);
+/* 查询清除执行状态；结果状态由调用方确认后复位为空闲。 */
+app_log_clear_status_t app_log_clear_get_status(void);
+void app_log_clear_complete(void);
 /* 返回当前实时LOG队列是否已写完、仍在等待，或存储不可用。 */
 app_log_flush_status_t app_log_get_flush_status(void);
 /* 读取当前Flash中有效实时LOG条数；返回值按通信协议限制为uint16_t。 */

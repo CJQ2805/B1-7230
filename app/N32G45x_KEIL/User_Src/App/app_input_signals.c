@@ -19,7 +19,7 @@
 #define APP_INPUT_SIGNAL_MCU_SW_DEBOUNCE_TIME_MS      20U
 #define APP_INPUT_SIGNAL_MCU_SW_DEBOUNCE_COUNT        \
     (APP_INPUT_SIGNAL_MCU_SW_DEBOUNCE_TIME_MS / APP_INPUT_SIGNAL_SAMPLE_PERIOD_MS)
-#define APP_INPUT_SIGNAL_MCU_SW_PRESENT_HOLD_TIME_MS  5000U
+#define APP_INPUT_SIGNAL_MCU_SW_PRESENT_HOLD_TIME_MS  8000U
 #define APP_INPUT_SIGNAL_MCU_SW_PRESENT_HOLD_COUNT    \
     (APP_INPUT_SIGNAL_MCU_SW_PRESENT_HOLD_TIME_MS / APP_INPUT_SIGNAL_SAMPLE_PERIOD_MS)
 #define APP_INPUT_SIGNAL_CAN_KEY_TIMEOUT_MS            3000UL
@@ -47,6 +47,7 @@ static uint8_t s_mcu_sw_pressed;
 static uint8_t s_mcu_sw_present;
 static uint16_t s_mcu_sw_debounce_count;
 static uint16_t s_mcu_sw_release_count;
+static uint8_t s_mcu_sw_press_event_pending;
 static uint32_t s_mcu_key_last_rx_tick;
 static uint8_t s_mcu_key_frame_seen;
 
@@ -101,6 +102,13 @@ static void app_input_signals_update_mcu_sw(void)
 
         if (s_mcu_sw_debounce_count >= APP_INPUT_SIGNAL_MCU_SW_DEBOUNCE_COUNT)
         {
+            if ((s_mcu_sw_pressed == 0U) && (u8McuSwPressed != 0U))
+            {
+                /* 仅发布物理按下沿；上电默认mcu_sw_present窗口不是按键事件。 */
+                taskENTER_CRITICAL();
+                s_mcu_sw_press_event_pending = 1U;
+                taskEXIT_CRITICAL();
+            }
             s_mcu_sw_pressed = u8McuSwPressed;
             s_mcu_sw_debounce_count = 0U;
         }
@@ -158,11 +166,26 @@ void app_input_signals_init(void)
     memset(&s_mcu_detc_state, 0, sizeof(s_mcu_detc_state));
     s_mcu_det_load_rearm_pending = 0U;
     s_mcu_sw_pressed = 0U;
-    s_mcu_sw_present = 0U;
+    /* 上电默认提供一次按键在位窗口，复用按键松开后的8秒显示保持时间。 */
+    s_mcu_sw_present = 1U;
     s_mcu_sw_debounce_count = 0U;
     s_mcu_sw_release_count = 0U;
+    s_mcu_sw_press_event_pending = 0U;
     s_mcu_key_last_rx_tick = 0U;
     s_mcu_key_frame_seen = 0U;
+    gt_app_input_signals.mcu_sw_present = 1U;
+}
+
+uint8_t app_input_signals_take_mcu_sw_press_event(void)
+{
+    uint8_t event;
+
+    taskENTER_CRITICAL();
+    event = s_mcu_sw_press_event_pending;
+    s_mcu_sw_press_event_pending = 0U;
+    taskEXIT_CRITICAL();
+
+    return event;
 }
 
 void app_input_signals_note_can_key_frame(void)

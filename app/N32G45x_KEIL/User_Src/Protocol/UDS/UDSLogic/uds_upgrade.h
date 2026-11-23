@@ -17,6 +17,8 @@
 #define UDS_UPGRADE_ROUTINE_STATUS_FAIL  0x05U
 
 void uds_upgrade_reset_state(void);
+/* True while this UDS session has APP2 erased/reserved for an application image. */
+bool_t uds_upgrade_app2_is_busy(void);
 uint8_t uds_upgrade_store_fingerprint(const uint8_t *data, uint16_t length);
 /* RequestDownload begins one customer-flow file transfer at its S-record address. */
 uint8_t uds_upgrade_request_download(uint32_t target_address, uint32_t download_size);

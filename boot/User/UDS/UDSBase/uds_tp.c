@@ -497,6 +497,7 @@ static int recv_flowcontrolframe(uint8_t* frame_buf, uint8_t frame_dlc)
 * 函数返回: 0: 所有连续帧接收完成; 1: 继续接收; other: -ERR
 * 其它说明: 无
 ******************************************************************************/
+/* UDS发送ID：0x7A8（RESPONSE_ID，CAN标准帧）。 */
 static void send_flowcontrol(network_flow_status_t flow_st)
 {
     uint16_t i;
@@ -529,6 +530,7 @@ static void send_flowcontrol(network_flow_status_t flow_st)
 * 函数返回: 0: OK; -1: ERR
 * 其它说明: 无
 ******************************************************************************/
+/* UDS发送ID：0x7A8（RESPONSE_ID，CAN标准帧）。 */
 static int send_singleframe (uint8_t* msg_buf, uint16_t msg_dlc)
 {
 	uint16_t i;
@@ -581,6 +583,7 @@ static int send_singleframe (uint8_t* msg_buf, uint16_t msg_dlc)
 * 函数返回: 成功发送的有效数据长度
 * 其它说明: 无
 ******************************************************************************/
+/* UDS发送ID：0x7A8（RESPONSE_ID，CAN标准帧）。 */
 static int send_firstframe (uint8_t* msg_buf, uint16_t msg_dlc)
 {
 	uint16_t i;
@@ -621,6 +624,7 @@ static int send_firstframe (uint8_t* msg_buf, uint16_t msg_dlc)
 * 函数返回: 成功发送的有效数据长度
 * 其它说明: 无
 ******************************************************************************/
+/* UDS发送ID：0x7A8（RESPONSE_ID，CAN标准帧）。 */
 static int send_consecutiveframe(uint8_t* msg_buf, uint16_t msg_dlc, uint8_t frame_sn)
 {
 	uint16_t i;
@@ -658,6 +662,7 @@ static int send_consecutiveframe(uint8_t* msg_buf, uint16_t msg_dlc, uint8_t fra
 * 函数返回: 0: OK; -1: ERR
 * 其它说明: 无
 ******************************************************************************/
+/* UDS发送ID：0x7A8（RESPONSE_ID，CAN标准帧）。 */
 static int send_multipleframe (uint8_t* msg_buf, uint16_t msg_dlc)
 {
 	uint16_t i;
@@ -702,6 +707,7 @@ static int send_multipleframe (uint8_t* msg_buf, uint16_t msg_dlc)
 * 函数返回: 0: OK; -1: ERR
 * 其它说明: TP 层向上层提供的数据发送接口
 ******************************************************************************/
+/* UDS发送ID：0x7A8（RESPONSE_ID，CAN标准帧）。 */
 int network_send_udsmsg(uint8_t* msg_buf, uint16_t msg_dlc)
 {
     // 检查参数合法性

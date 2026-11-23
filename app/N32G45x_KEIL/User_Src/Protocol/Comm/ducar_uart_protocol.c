@@ -8,6 +8,7 @@
  *   3. 通过当前G45x UART发送BMS响应，并维护LOG异步导出。
  */
 #include "Protocol/Comm/ducar_uart_protocol.h"
+#include "Protocol/Comm/ducar_can_protocol.h"
 #include "Protocol/IAP/ducar_uart_iap_protocol.h"
 
 #include "App/app_bms_types.h"
@@ -253,6 +254,7 @@ static ducar_bms_log_export_t s_ducar_bms_log_export;                        /* 
 static app_bms_snapshot_t s_ducar_bms_snapshot;                              /* 当前G45x快照读取缓存。 */
 static uint8_t s_ducar_bms_soc_pending_cmd;
 static uint32_t s_ducar_bms_soc_started_ms;
+static uint8_t s_ducar_bms_log_clear_pending;
 
 /* G45x快照模块返回副本，不提供WB4工程中不存在的内部指针接口。 */
 static const app_bms_snapshot_t *ducar_bms_snapshot_get(void)
@@ -1323,6 +1325,12 @@ static void ducar_bms_start_log_export(const ducar_bms_frame_t *frame)
 /* 处理UART日志条数查询和记录导出请求。 */
 static void ducar_bms_handle_log_record(const ducar_bms_frame_t *frame)
 {
+    if (app_log_clear_get_status() == APP_LOG_CLEAR_PENDING)
+    {
+        ducar_bms_reply_log_error();
+        return;
+    }
+
     if ((frame->len == 1U) && (frame->data[0] == DUCAR_BMS_LOG_COUNT_REQ))
     {
         s_ducar_bms_log_export.state = DUCAR_BMS_LOG_EXPORT_IDLE; /* 重新查询总条数时，取消上一次未完成导出。 */
@@ -1400,7 +1408,8 @@ static uint8_t ducar_bms_is_simple_command(const ducar_bms_frame_t *frame)
 /* 处理BMS关机控制请求并安排安全关机动作。 */
 static void ducar_bms_handle_bms_shutdown(const ducar_bms_frame_t *frame)
 {
-    if (ducar_bms_is_simple_command(frame) == 0U)
+    if ((ducar_bms_is_simple_command(frame) == 0U) ||
+        (app_log_clear_get_status() == APP_LOG_CLEAR_PENDING))
     {
         ducar_bms_send_status(DUCAR_BMS_CMD_SET_BMS_SHUTDOWN, DUCAR_BMS_NAK);
         return;
@@ -1430,7 +1439,8 @@ static uint8_t s_ducar_bms_reset_pending;
 
 static void ducar_bms_handle_bms_reset(const ducar_bms_frame_t *frame)
 {
-    if (ducar_bms_is_simple_command(frame) == 0U)
+    if ((ducar_bms_is_simple_command(frame) == 0U) ||
+        (app_log_clear_get_status() == APP_LOG_CLEAR_PENDING))
     {
         ducar_bms_send_status(DUCAR_BMS_CMD_SET_BMS_RESET, DUCAR_BMS_NAK);
         return;
@@ -1457,9 +1467,38 @@ static void ducar_bms_handle_bms_reset(const ducar_bms_frame_t *frame)
 /* 处理BMS故障清除控制请求。 */
 static void ducar_bms_handle_bms_fault_clear(const ducar_bms_frame_t *frame)
 {
+    if ((frame->len == 1U) &&
+        (frame->data[0] == DUCAR_BMS_FAULT_CLEAR_LOG_SUBCMD))
+    {
+        /* 日志导出期间不清Flash，避免导出读到被逐页擦除的数据。 */
+        if (s_ducar_bms_log_clear_pending != 0U)
+        {
+            return;
+        }
+        if ((s_ducar_bms_log_export.state != DUCAR_BMS_LOG_EXPORT_IDLE) ||
+            ducar_can_transport_is_active() ||
+            !app_log_clear_request())
+        {
+            (void)ducar_bms_send_status(DUCAR_BMS_CMD_SET_BMS_FAULT_CLEAR,
+                                        DUCAR_BMS_NAK);
+            return;
+        }
+
+        /* 清除由SaveLog任务逐页执行，完成后再异步返回0x68 ACK/NAK。 */
+        s_ducar_bms_log_clear_pending = 1U;
+        return;
+    }
+
     if (ducar_bms_is_simple_command(frame) == 0U)
     {
         ducar_bms_send_status(DUCAR_BMS_CMD_SET_BMS_FAULT_CLEAR, DUCAR_BMS_NAK);
+        return;
+    }
+
+    if (app_log_clear_get_status() == APP_LOG_CLEAR_PENDING)
+    {
+        (void)ducar_bms_send_status(DUCAR_BMS_CMD_SET_BMS_FAULT_CLEAR,
+                                    DUCAR_BMS_NAK);
         return;
     }
 
@@ -1700,6 +1739,12 @@ void ducar_uart_protocol_init(void)
     s_ducar_bms_log_export.last_send_ms = 0UL;
     s_ducar_bms_soc_pending_cmd = DUCAR_BMS_SOC_CMD_NONE;
     s_ducar_bms_soc_started_ms = 0UL;
+    s_ducar_bms_log_clear_pending = 0U;
+}
+
+bool ducar_bms_uart_log_export_is_active(void)
+{
+    return (s_ducar_bms_log_export.state == DUCAR_BMS_LOG_EXPORT_BUSY);
 }
 
 /* SOC命令由BMS任务查表并保存Flash，UART只在结果确定后回ACK/NAK。 */
@@ -1759,6 +1804,32 @@ static void ducar_bms_soc_reply_task_protocol(void)
     }
 }
 
+
+/* 等日志分区逐页擦除完成后，返回UART故障清除命令的最终状态。 */
+static void ducar_bms_log_clear_reply_task_protocol(void)
+{
+    app_log_clear_status_t eClearStatus;
+
+    if (s_ducar_bms_log_clear_pending == 0U)
+    {
+        return;
+    }
+
+    eClearStatus = app_log_clear_get_status();
+    if ((eClearStatus != APP_LOG_CLEAR_SUCCESS) &&
+        (eClearStatus != APP_LOG_CLEAR_FAILED))
+    {
+        return;
+    }
+
+    if (ducar_bms_send_status(DUCAR_BMS_CMD_SET_BMS_FAULT_CLEAR,
+                              (eClearStatus == APP_LOG_CLEAR_SUCCESS) ?
+                              DUCAR_BMS_ACK : DUCAR_BMS_NAK))
+    {
+        s_ducar_bms_log_clear_pending = 0U;
+        app_log_clear_complete();
+    }
+}
 
 
 /* 推进UART日志导出状态机并发送下一条日志。 */
@@ -1836,7 +1907,13 @@ void ducar_bms_uart_log_task(void)
         return;
     }
     ducar_bms_soc_reply_task_protocol();
-    if (s_ducar_bms_soc_pending_cmd == DUCAR_BMS_SOC_CMD_NONE)
+    if (s_ducar_bms_soc_pending_cmd != DUCAR_BMS_SOC_CMD_NONE)
+    {
+        return;
+    }
+
+    ducar_bms_log_clear_reply_task_protocol();
+    if (s_ducar_bms_log_clear_pending == 0U)
     {
         ducar_bms_log_export_task_protocol();
     }

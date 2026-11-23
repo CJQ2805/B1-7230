@@ -14,5 +14,7 @@ void boot_can_upgrade_init(boot_can_upgrade_tx_callback_t tx_callback);
 void boot_can_upgrade_task(void);
 /* 接收一帧CAN报文并按PF分发到BOOT升级状态机。 */
 bool boot_can_upgrade_on_receive(const ducar_can_frame_t *frame);
+/* 判断CAN IAP是否占用APP2或正在提交升级。 */
+bool boot_can_upgrade_is_busy(void);
 
 #endif

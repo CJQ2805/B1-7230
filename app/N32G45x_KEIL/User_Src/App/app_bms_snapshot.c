@@ -29,6 +29,7 @@
 #include "App/app_mcu_ntc.h"
 #include "App/app_param.h"
 #include "App/app_param_api.h"
+#include "Driver/d_timer.h"
 #include "FreeRTOS.h"
 #include "HSI_afe/hsi_afe.h"
 #include "app_soc.h"
@@ -37,6 +38,13 @@
 #include <string.h>
 
 app_bms_snapshot_t gt_app_bms_snapshot;
+
+#define APP_BMS_CURRENT_SAMPLE_FRESH_TIMEOUT_MS ((uint32_t)500UL)
+
+/* 只记录成功采样序号变化的时刻；I2C读取失败时不续期旧业务电流。 */
+static uint32_t s_u32LastCurrentSampleSeq;
+static uint32_t s_u32LastCurrentSampleMs;
+static uint8_t s_u8CurrentSampleSeen;
 
 static uint8_t app_bms_snapshot_cell_count(void)
 {
@@ -222,12 +230,26 @@ static uint32_t app_bms_snapshot_sum_cell_voltage(const app_bms_snapshot_t *ptSn
 static void app_bms_snapshot_update_current(app_bms_snapshot_t *ptSnapshot)
 {
     int32_t s32Current10ma;
+    uint32_t u32NowMs;
 
     /* 保留校准后的实际小电流供SOC积分等使用。 */
     ptSnapshot->current_ma = gt_hsi_afe.curr_calibrated;
     /* 通信使用死区后的毫安值，避免10mA量化或16位饱和。 */
     ptSnapshot->current_business_ma = gt_hsi_afe.curr_real;
     ptSnapshot->afe_current_update_seq = gt_hsi_afe.current_update_seq;
+    u32NowMs = d_timer_get_ms();
+    if (ptSnapshot->afe_current_update_seq != s_u32LastCurrentSampleSeq)
+    {
+        s_u32LastCurrentSampleSeq = ptSnapshot->afe_current_update_seq;
+        s_u32LastCurrentSampleMs = u32NowMs;
+        s_u8CurrentSampleSeen = 1U;
+    }
+    ptSnapshot->afe_current_sample_time_ms = s_u32LastCurrentSampleMs;
+    ptSnapshot->afe_current_sample_valid = s_u8CurrentSampleSeen;
+    ptSnapshot->afe_current_sample_fresh =
+        ((s_u8CurrentSampleSeen != 0U) &&
+         ((uint32_t)(u32NowMs - s_u32LastCurrentSampleMs) <=
+          APP_BMS_CURRENT_SAMPLE_FRESH_TIMEOUT_MS)) ? 1U : 0U;
     /* current_10ma给保护和充放电方向判断使用，继续采用零死区后的业务电流。 */
     s32Current10ma = ptSnapshot->current_business_ma / 10;
 
@@ -460,6 +482,9 @@ void app_bms_snapshot_init(void)
 {
     memset(&gt_app_bms_snapshot, 0, sizeof(gt_app_bms_snapshot));
     app_bms_snapshot_init_temp_values(&gt_app_bms_snapshot);
+    s_u32LastCurrentSampleSeq = gt_hsi_afe.current_update_seq;
+    s_u32LastCurrentSampleMs = 0UL;
+    s_u8CurrentSampleSeen = 0U;
 }
 
 void app_bms_snapshot_update(void)
@@ -551,6 +576,8 @@ void app_bms_snapshot_set_work_status(uint8_t bms_work_status)
 
 void app_bms_snapshot_read(app_bms_snapshot_t *snapshot)
 {
+    uint32_t now_ms;
+
     if (snapshot == 0)
     {
         return;
@@ -559,4 +586,11 @@ void app_bms_snapshot_read(app_bms_snapshot_t *snapshot)
     taskENTER_CRITICAL();
         *snapshot = gt_app_bms_snapshot;
     taskEXIT_CRITICAL();
+
+    /* 即使快照刷新任务延迟，调用方也按当前TIM6时间重新判定电流样本是否仍新鲜。 */
+    now_ms = d_timer_get_ms();
+    snapshot->afe_current_sample_fresh =
+        ((snapshot->afe_current_sample_valid != 0U) &&
+         ((uint32_t)(now_ms - snapshot->afe_current_sample_time_ms) <=
+          APP_BMS_CURRENT_SAMPLE_FRESH_TIMEOUT_MS)) ? 1U : 0U;
 }

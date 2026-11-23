@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 #define Module_Major_Version_M_Flash_WL    0
-#define Module_Minor_Version_M_Flash_WL    1
+#define Module_Minor_Version_M_Flash_WL    2
 
 #define M_FLASH_WL_FLASH_START_ADDR        ((uint32_t)0x08000000U)
 #define M_FLASH_WL_FLASH_END_ADDR          ((uint32_t)0x08080000U)
@@ -26,7 +26,8 @@ typedef enum
     M_FLASH_WL_ERR_EMPTY,
     M_FLASH_WL_ERR_NO_SPACE,
     M_FLASH_WL_ERR_CRC,
-    M_FLASH_WL_ERR_FLASH
+    M_FLASH_WL_ERR_FLASH,
+    M_FLASH_WL_ERR_BUSY
 } m_flash_wl_status_t;
 
 /* 均衡擦写分区配置。
@@ -75,6 +76,9 @@ typedef struct
 m_flash_wl_status_t m_flash_wl_init(m_flash_wl_area_t *area, const m_flash_wl_cfg_t *cfg);
 /* 格式化整个分区，会擦除该分区内所有页。 */
 m_flash_wl_status_t m_flash_wl_format(m_flash_wl_area_t *area, const m_flash_wl_cfg_t *cfg);
+/* 分页格式化：按page_index从0递增调用，每次最多擦除一页；最后一页完成时complete=true。 */
+m_flash_wl_status_t m_flash_wl_format_step(m_flash_wl_area_t *area, const m_flash_wl_cfg_t *cfg,
+                                           uint16_t page_index, bool *complete);
 /* 追加一条记录；写入长度不能超过 m_flash_wl_get_payload_size() 返回值。 */
 m_flash_wl_status_t m_flash_wl_append(m_flash_wl_area_t *area, const uint8_t *data, uint16_t len);
 /* 读取最新一条有效记录。 */

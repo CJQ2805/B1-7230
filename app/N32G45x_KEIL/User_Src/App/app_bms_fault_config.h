@@ -574,14 +574,14 @@
  * 充电方向为正数。
  */
 #if (BMS_PROTECT_CHG_OC_WARN_ENABLE != 0U)
-#define OCC_WAR_SET_CUR_10MA                   2300    /* 充电电流达到或超过配置阈值并满足延时后置位过流告警。 */
+#define OCC_WAR_SET_CUR_10MA                   3000    /* 充电电流达到或超过配置阈值并满足延时后置位过流告警。 */
 #define OCC_WAR_SET_TIME                       TMR0_DELAY_SEC(5U)
-#define OCC_WAR_RECOVER_CUR_10MA               2000    /* 充电电流小于等于26A并满足延时后清除过流告警。 */
+#define OCC_WAR_RECOVER_CUR_10MA               2500    /* 充电电流小于等于26A并满足延时后清除过流告警。 */
 #define OCC_WAR_RECOVER_TIME                   TMR0_DELAY_SEC(30U)
 #endif
 
 #if (BMS_PROTECT_CHG_OC_PRO_ENABLE != 0U)
-#define OCC1_SET_PRO_CUR_10MA                  2500    /* 一级充电过流保护阈值，25A。 */
+#define OCC1_SET_PRO_CUR_10MA                  3500    /* 一级充电过流保护阈值，25A。 */
 #define OCC1_SET_PRO_TIME                      TMR0_DELAY_SEC(30U)
 #define OCC2_SET_PRO_CUR_10MA                  3000    /* 二级充电过流保护阈值，30A。 */
 #define OCC2_SET_PRO_TIME                      TMR0_DELAY_MS(500U)
@@ -628,12 +628,12 @@
  */
 #if (BMS_PROTECT_DSG_OC_WARN_ENABLE != 0U)
 #define OCD1_WAR_SET_CUR_10MA                  (-8000) /* 放电电流达到或低于配置阈值并满足延时后置位一级过流告警。 */
-#define OCD1_WAR_SET_TIME                      TMR0_DELAY_SEC(2U)
+#define OCD1_WAR_SET_TIME                      TMR0_DELAY_SEC(10U)
 #define OCD1_WAR_RECOVER_CUR_10MA              (-7000) /* 放电电流不低于恢复阈值并满足延时后清除一级过流告警。 */
 #define OCD1_WAR_RECOVER_TIME                  TMR0_DELAY_SEC(5U)
 
 #define OCD2_WAR_SET_CUR_10MA                  (-11000) /* 放电电流达到或低于配置阈值并满足延时后置位二级过流告警。 */
-#define OCD2_WAR_SET_TIME                      TMR0_DELAY_SEC(30U)
+#define OCD2_WAR_SET_TIME                      TMR0_DELAY_SEC(3U)
 #define OCD2_WAR_RECOVER_CUR_10MA              (-7000) /* 放电电流不低于恢复阈值并满足延时后清除二级过流告警。 */
 #define OCD2_WAR_RECOVER_TIME                  TMR0_DELAY_SEC(5U)
 #endif

@@ -53,6 +53,7 @@ void uds_recv_frame(uint32_t id, uint8_t* frame_buf, uint8_t frame_dlc)
 * 函数返回: 无
 * 其它说明: frame_dlc 长度应当等于 FRAME_SIZE
 ******************************************************************************/
+/* 发送ID由response_id指定；当前UDS传输层传入0x7A8标准帧ID。 */
 int uds_send_frame(uint32_t response_id, uint8_t* frame_buf, uint8_t frame_dlc)
 {
     /* CAN IAP期间仅允许升级帧占用总线，UDS发送交由传输层超时收敛。 */

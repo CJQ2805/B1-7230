@@ -1,6 +1,7 @@
 #include "boot_uart.h"
 
 #include "Boot/boot_config.h"
+#include "Hal_Driver/boot_timer.h"
 #include "SEGGER_RTT.h"
 #include "n32g45x_gpio.h"
 #include "n32g45x_rcc.h"
@@ -10,6 +11,7 @@
 #define BOOT_UART_PORT      GPIOB
 #define BOOT_UART_TX_PIN    GPIO_PIN_4
 #define BOOT_UART_RX_PIN    GPIO_PIN_5
+#define BOOT_UART_TX_WAIT_TIMEOUT_MS ((uint32_t)300UL)
 
 static void boot_uart_gpio_init(void)
 {
@@ -52,35 +54,54 @@ void boot_uart_init(void)
     SEGGER_RTT_Init(); /* 调试日志走RTT，UART保留给升级数据接收。 */
 }
 
-void boot_uart_send_byte(uint8_t data)
+static bool boot_uart_wait_flag(uint16_t flag)
 {
-    while (USART_GetFlagStatus(USART2, USART_FLAG_TXDE) == RESET)
+    uint32_t u32StartTimeMs = boot_timer_get_ms();
+
+    while (USART_GetFlagStatus(USART2, flag) == RESET)
     {
+        if ((uint32_t)(boot_timer_get_ms() - u32StartTimeMs) >=
+            BOOT_UART_TX_WAIT_TIMEOUT_MS)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool boot_uart_send_byte(uint8_t data)
+{
+    if (!boot_uart_wait_flag(USART_FLAG_TXDE))
+    {
+        return false;
     }
 
     USART_SendData(USART2, data);
+    return true;
 }
 
-void boot_uart_send_buffer(const uint8_t *data, uint32_t len)
+bool boot_uart_send_buffer(const uint8_t *data, uint32_t len)
 {
     uint32_t i;
 
     if (data == 0)
     {
-        return;
+        return false;
     }
 
     for (i = 0UL; i < len; i++)
     {
-        boot_uart_send_byte(data[i]);
+        if (!boot_uart_send_byte(data[i]))
+        {
+            return false;
+        }
     }
+    return true;
 }
 
-void boot_uart_wait_tx_complete(void)
+bool boot_uart_wait_tx_complete(void)
 {
-    while (USART_GetFlagStatus(USART2, USART_FLAG_TXC) == RESET)
-    {
-    }
+    return boot_uart_wait_flag(USART_FLAG_TXC);
 }
 
 bool boot_uart_read_byte(uint8_t *data)

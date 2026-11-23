@@ -28,6 +28,17 @@ struct _app_soc_t  gt_app_soc;
 /* SOC运行状态的全局实例，由采样任务更新并由BMS快照/通信层读取。 */
 /* 每次真实执行 OCV 校准时递增，供 BMS 任务识别查表校准和普通积分变化。 */
 static uint32_t s_app_soc_ocv_update_count;
+/* FCC满充置位/解除计时基线，故障清除命令会同时复位这两个计时器。 */
+static unsigned long s_u32fcc_set_cnt;
+static unsigned long s_u32fcc_reset_cnt;
+
+/* 清除满充锁存源；容量/SOC数值仍由SOC算法按测量状态更新。 */
+void app_soc_clear_full_charge_latch(void)
+{
+	gt_app_soc.u8soc_fcc_flag = 0U;
+	s_u32fcc_set_cnt = 0UL;
+	s_u32fcc_reset_cnt = 0UL;
+}
 
 /*
  * 初始化 SOC 状态，必要时按 OCV 表校准容量。
@@ -396,7 +407,6 @@ static void SOC_CurrentIntegrator(long s32current, unsigned char* au8tim_250ms_f
  */
 void SOC_FCCHandle(long s32current, unsigned int u32cell_arv_volt	,unsigned char u8ucv_flag, unsigned char u8ocv_flag,unsigned int u32cell_min_volt)
 {
-	static unsigned long u32fcc_set_cnt = 0, u32fcc_reset_cnt = 0; // 满充置位/解除判据的250ms计时起点
 	static unsigned long u32soc_tim_cnt = 0, u32soc_10min_tim_cnt = 0; // SOC快速/慢速追赶的计时起点
 	static unsigned char bsoc_change_tim = 0, bsoc_change_10min_tim = 0; // 1秒/10分钟追赶到期状态
 
@@ -435,7 +445,7 @@ void SOC_FCCHandle(long s32current, unsigned int u32cell_arv_volt	,unsigned char
 	}
 
 	 gt_app_soc.u8soc_fcc_flag = app_soc_delay((((s32current > S0C_FCC_SET_STOP_CURRENT_MIN) && (s32current < SOC_FCC_SET_STOP_CURRENT_MAX) && (u32cell_arv_volt > SOC_FCC_SET_MIN_CELL_VOLTAGE))), // CV窗口持续到配置时间后置满充标志
-																	&u32fcc_set_cnt, // 保存满充置位计时起点
+																				&s_u32fcc_set_cnt, // 保存满充置位计时起点
 																	(SOC_FCC_SET_DELAY_TIME * 4), // 满充延时秒数换算为250ms tick
 																	gt_app_soc.u8soc_fcc_flag, // 当前满充锁存状态
 																	1); // 条件持续到期后置位满充状态
@@ -462,23 +472,22 @@ void SOC_FCCHandle(long s32current, unsigned int u32cell_arv_volt	,unsigned char
 	}
 
 	gt_app_soc.u8soc_fcc_flag = app_soc_delay((u32cell_max_volt > SOC_FCC_SET_VOLTAGE), // 最高单体超过CC满充阈值时开始计时
-																	&u32fcc_set_cnt, // 保存本轮满充计时起点
+																				&s_u32fcc_set_cnt, // 保存本轮满充计时起点
 																	SOC_FCC_SET_DELAY_TIME * 4, // 秒换算为250ms tick
-			gt_app_soc.u8soc_fcc_flag, // 当前满充锁存状态
+																	gt_app_soc.u8soc_fcc_flag, // 当前满充锁存状态
 																	1); // 到期后置位满充状态
 
 #endif
 
 
 	gt_app_soc.u8soc_fcc_flag = app_soc_delay((u32cell_arv_volt < SOC_FCC_RESET_MIN_CELL_VOLTAGE) || (s32current < SOC_FCC_RESET_CURRENT), // 最高单体低于复位阈值或放电电流越过阈值时开始解除计时
-			&u32fcc_reset_cnt, // 保存解除条件的计时起点
+			&s_u32fcc_reset_cnt, // 保存解除条件的计时起点
 			SOC_FCC_RESET_DELAY_TIME * 4, // 配置秒数换算为250ms tick
 			gt_app_soc.u8soc_fcc_flag, // 当前满充状态
 			0); // 条件持续到期后清除满充状态
 
 	if(gt_app_soc.u8soc_fcc_flag || u8ocv_flag) // 满充标志已置位或输入过压标志有效时，按满充状态同步各容量值
 	{
-		gt_app_soc.u8soc_fcc_flag = 1; // 锁存满充状态
 		gt_app_soc.tsoc_fcc_data.u8handle_soc = 100; // CC模式的内部满充SOC记录
 		gt_app_soc.u8display_soc = 100; // 对外SOC立即置满
 		gt_app_soc.tsoc_capacity_data.s32display_cap_val	= gt_app_soc.s32battery_full_cap; // 显示容量置为FCC
@@ -811,7 +820,7 @@ static void SOC_Stand(unsigned short u16arv_cellVolt, const unsigned short *pu16
  */
 int app_soc_data_handle(unsigned short u16max_cellVolt, unsigned short u16min_cellVolt,
 					 const unsigned short *pu16cell_volt_table,
-					 long s32current, unsigned char* au8tim_250ms_flag,
+						 long s32current, unsigned char* au8tim_250ms_flag,
 					 int s16cell_min_temp,
 				     int s16cell_max_temp,
 					 unsigned char u8ucv_flag,
@@ -828,7 +837,7 @@ int app_soc_data_handle(unsigned short u16max_cellVolt, unsigned short u16min_ce
 	SOC_FccUpdate(u16max_cellVolt,pu16cell_volt_table,s32current); // 尝试学习FCC并更新SOH
 	SOC_Stand(u16max_cellVolt, pu16cell_volt_table, au8force_ocv_flag,s32current); // 检查静置OCV校准条件
 
-	app_sop_task(s16cell_max_temp, s16cell_min_temp, gt_app_soc.u8display_soc, s32current, u16max_cellVolt); // 用最新温度/SOC更新SOP限值
+	app_sop_task(s16cell_max_temp, s16cell_min_temp, gt_app_soc.u8display_soc, s32current); // 用最新温度/SOC更新SOP限值
 	return 0; // 本周期SOC处理成功
 }
 

@@ -26,7 +26,9 @@
 #include "App/app_input_signals.h"
 #include "App/app_flash_map.h"
 #include "App/app_hw_apply.h"
+#include "app_soc.h"
 #include "app_log_manage.h"
+#include "Task/bms_task.h"
 #include "Driver/d_flash.h"
 #include "Driver/d_timer.h"
 #include "RTT/SEGGER_RTT.h"
@@ -2118,12 +2120,19 @@ void app_bms_fault_clear_all(void)
     memset(&gt_app_bms_fault.tbms_fault_stat,
            0,
            sizeof(gt_app_bms_fault.tbms_fault_stat));
+    /* 满充位来自SOC锁存源，清故障时同步复位SOC标志和满充计时基线。 */
+    app_soc_clear_full_charge_latch();
     /* 清除放电过流恢复计时残留，避免命令清除后沿用旧计时状态。 */
     s_bms_ocd_recover_count = 0U;
     /* 清除命令以当前AFE短路状态建立基线，持续置位的同一次故障不会立刻重复计数。 */
     s_bms_short_event_previous_active =
         (s_bms_fault_last_data.afe_status_valid && s_bms_fault_last_data.afe_short_circuit) ? 1U : 0U;
     taskEXIT_CRITICAL();
+
+    /* 清除SOC源后立即同步快照，避免旧的SOC满充位被故障合并任务重新拷回。 */
+    app_bms_snapshot_update_soc();
+    /* u8soc_fcc_flag位于整块SOC快照中；请求BMS任务把清零值写回独立SOC页。 */
+    app_bms_soc_flash_save_request();
 
     if (old_ocd_warning != 0U)
     {

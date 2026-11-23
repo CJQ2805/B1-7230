@@ -19,7 +19,7 @@ bool app_can_iap_is_busy(void);
 /* 客户主动CAN会话期间阻止STOP；协议超时结束后放行现有低功耗判定。 */
 bool app_can_is_sleep_allowed(void);
 
-/* 宗申周期报文无电流超时后，低功耗模块可跳过通用60秒等待。 */
+/* 查询宗申周期发送的无电流停发等待是否已完成。 */
 bool app_can_is_zs_idle_timeout_complete(void);
 
 /* STOP由外部事件唤醒、CAN恢复后通知宗申协议恢复周期报文。 */

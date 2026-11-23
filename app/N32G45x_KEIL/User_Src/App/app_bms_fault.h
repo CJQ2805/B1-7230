@@ -49,19 +49,19 @@ typedef union
 /* 放电故障A组：单体欠压、放电温度和统一放电过流告警。 */
 typedef struct
 {
-    uint16_t b1cell_war_cuv  : 1; /* 单体欠压告警。 */
-    uint16_t b1cell_pro_cuv1 : 1; /* 单体一级欠压保护。 */
-    uint16_t b1cell_deep_cuv : 1; /* 深度欠压锁存。 */
-    uint16_t b1pack_war_otd  : 1; /* 放电高温告警。 */
-    uint16_t b1pack_pro_otd  : 1; /* 放电高温保护。 */
-    uint16_t b1pack_war_utd  : 1; /* 放电低温告警。 */
-    uint16_t b1pack_pro_utd  : 1; /* 放电低温保护。 */
-    uint16_t b1pack_war_ocd  : 1; /* 唯一放电过流告警。 */
+    uint16_t b1cell_war_cuv   : 1; /* 单体欠压告警。 */
+    uint16_t b1cell_pro_cuv1  : 1; /* 单体一级欠压保护。 */
+    uint16_t b1cell_deep_cuv  : 1; /* 深度欠压锁存。 */
+    uint16_t b1pack_war_otd   : 1; /* 放电高温告警。 */
+    uint16_t b1pack_pro_otd   : 1; /* 放电高温保护。 */
+    uint16_t b1pack_war_utd   : 1; /* 放电低温告警。 */
+    uint16_t b1pack_pro_utd   : 1; /* 放电低温保护。 */
+    uint16_t b1pack_war_ocd   : 1; /* 唯一放电过流告警。 */
     uint16_t b3unused_ocd_war : 3; /* 原分级告警位预留，不再对外表达。 */
-    uint16_t b1pack_ocd_lock : 1; /* 放电过流锁定。 */
-    uint16_t b1low_soc       : 1; /* 低SOC告警/保护来源。 */
-    uint16_t b1cell_pro_cuv2 : 1; /* 单体二级欠压保护，复用原有预留位。 */
-    uint16_t b2unused       : 2;
+    uint16_t b1pack_ocd_lock  : 1; /* 放电过流锁定。 */
+    uint16_t b1low_soc        : 1; /* 低SOC告警/保护来源。 */
+    uint16_t b1cell_pro_cuv2  : 1; /* 单体二级欠压保护，复用原有预留位。 */
+    uint16_t b2unused         : 2;
 } t_discharge_fault_A;
 
 typedef union
@@ -95,19 +95,19 @@ typedef union
 typedef struct
 {
     uint16_t b1AFE_fault                 : 1; /* AFE通信/数据/硬件故障。 */
-    uint16_t b1cell_voltage_diff_waring : 1; /* 单体压差告警。 */
-    uint16_t b1cell_voltage_diff_fault  : 1; /* 单体压差一级保护。 */
-    uint16_t b1CHG_MOS_failure          : 1; /* 充电MOS失效。 */
-    uint16_t b1DSG_MOS_faulure          : 1; /* 放电MOS失效。 */
-    uint16_t b1MOS_OTP                  : 1; /* MOS过温保护。 */
-    uint16_t b1hardware_second_pro      : 1; /* 二级硬件保护输入。 */
-    uint16_t b1SCP_FUSE_fusing          : 1; /* 短路熔断标志。 */
-    uint16_t b1MOS_OTP_waring           : 1; /* MOS过温告警。 */
-    uint16_t b1MOS_OTP_FUSE             : 1; /* MOS过温熔断条件。 */
-    uint16_t b1OTD_FUSE                 : 1; /* 放电过温熔断条件。 */
-    uint16_t b1NTC_fault                : 1; /* 至少两路NTC电气异常且电池空闲后置位的NTC保护。 */
-    uint16_t b1cell_voltage_diff_fault2 : 1; /* 单体压差二级保护，使用原预留位。 */
-    uint16_t b3unnused                  : 3;
+    uint16_t b1cell_voltage_diff_waring  : 1; /* 单体压差告警。 */
+    uint16_t b1cell_voltage_diff_fault   : 1; /* 单体压差一级保护。 */
+    uint16_t b1CHG_MOS_failure           : 1; /* 充电MOS失效。 */
+    uint16_t b1DSG_MOS_faulure           : 1; /* 放电MOS失效。 */
+    uint16_t b1MOS_OTP                   : 1; /* MOS过温保护。 */
+    uint16_t b1hardware_second_pro       : 1; /* 二级硬件保护输入。 */
+    uint16_t b1SCP_FUSE_fusing           : 1; /* 短路熔断标志。 */
+    uint16_t b1MOS_OTP_waring            : 1; /* MOS过温告警。 */
+    uint16_t b1MOS_OTP_FUSE              : 1; /* MOS过温熔断条件。 */
+    uint16_t b1OTD_FUSE                  : 1; /* 放电过温熔断条件。 */
+    uint16_t b1NTC_fault                 : 1; /* 至少两路NTC电气异常且电池空闲后置位的NTC保护。 */
+    uint16_t b1cell_voltage_diff_fault2  : 1; /* 单体压差二级保护，使用原预留位。 */
+    uint16_t b3unnused                   : 3;
 } t_general_fault_A;
 
 typedef union
@@ -174,7 +174,7 @@ void app_bms_fault_load_shutdown_pf(void);
 uint8_t app_bms_fault_save_shutdown_pf(void);
 /* 低优先级后台持久化入口；仅在电压保护事件计数变更后写入PF页。 */
 void app_bms_fault_storage_task(void);
-/* 清除当前运行态的全部软件故障、最终故障和汇总状态；不改变故障判断配置。 */
+/* 清除运行态软件/最终/汇总故障及SOC满充锁存；不改变故障判断配置。 */
 void app_bms_fault_clear_all(void);
 /* 清除APP database中的PF记录和过充/过放次数；返回1表示Flash擦除成功。 */
 uint8_t app_bms_fault_clear_shutdown_pf(void);

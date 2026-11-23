@@ -5,16 +5,81 @@
  */
 #include "app_sop.h"
 #include "app_soc.h"
+#include "App/app_parallel_id.h"
+#include "App/app_param.h"
 struct  _app_sop_t   gt_app_sop;
 
-/* 放电 SOP 表的最低有效温度；T≥58℃由表格最后一行覆盖。 */
-#define SOP_DISCHARGE_MIN_TEMP_C (-25)
+/* SOP温度配置，单位℃。各表的温度边界必须从低到高排列；修改边界不会修改表内电流。 */
+/* 放电表共10行：MIN为最低有效温度，ROW1~ROW9为对应行的起始温度。 */
+#define APP_SOP_DISCHARGE_TEMP_MIN_C   (-25)
+#define APP_SOP_DISCHARGE_TEMP_ROW1_C  (-10)
+#define APP_SOP_DISCHARGE_TEMP_ROW2_C  0
+#define APP_SOP_DISCHARGE_TEMP_ROW3_C  10
+#define APP_SOP_DISCHARGE_TEMP_ROW4_C  20
+#define APP_SOP_DISCHARGE_TEMP_ROW5_C  30
+#define APP_SOP_DISCHARGE_TEMP_ROW6_C  40
+#define APP_SOP_DISCHARGE_TEMP_ROW7_C  50
+#define APP_SOP_DISCHARGE_TEMP_ROW8_C  55
+#define APP_SOP_DISCHARGE_TEMP_ROW9_C  58
+
+/* 充电表共7行：MIN为最低有效温度，ROW1~ROW6为对应行起始温度，MAX为禁止充电温度。 */
+#define APP_SOP_CHARGE_TEMP_MIN_C      (-10)
+#define APP_SOP_CHARGE_TEMP_ROW1_C     0
+#define APP_SOP_CHARGE_TEMP_ROW2_C     10
+#define APP_SOP_CHARGE_TEMP_ROW3_C     20
+#define APP_SOP_CHARGE_TEMP_ROW4_C     30
+#define APP_SOP_CHARGE_TEMP_ROW5_C     40
+#define APP_SOP_CHARGE_TEMP_ROW6_C     50
+#define APP_SOP_CHARGE_TEMP_MAX_C      55
+
+/* 回充表共2行：MIN为最低有效温度，ROW1为常温行起始温度，MAX为高温禁止回充温度。 */
+#define APP_SOP_RECHARGE_TEMP_MIN_C    (-10)
+#define APP_SOP_RECHARGE_TEMP_ROW1_C   0
+#define APP_SOP_RECHARGE_TEMP_MAX_C    60
+
+/* 最高电芯温度超过该值时，充放电SOP按最高温查表；否则按最低温查表。 */
+#define APP_SOP_HIGH_TEMP_C            40
+
+/* 输入温度为int8_t；错误的温度配置在编译时阻止生成固件。 */
+#if (APP_SOP_DISCHARGE_TEMP_MIN_C < -128) || (APP_SOP_DISCHARGE_TEMP_ROW9_C > 127) || \
+    (APP_SOP_DISCHARGE_TEMP_MIN_C >= APP_SOP_DISCHARGE_TEMP_ROW1_C) || \
+    (APP_SOP_DISCHARGE_TEMP_ROW1_C >= APP_SOP_DISCHARGE_TEMP_ROW2_C) || \
+    (APP_SOP_DISCHARGE_TEMP_ROW2_C >= APP_SOP_DISCHARGE_TEMP_ROW3_C) || \
+    (APP_SOP_DISCHARGE_TEMP_ROW3_C >= APP_SOP_DISCHARGE_TEMP_ROW4_C) || \
+    (APP_SOP_DISCHARGE_TEMP_ROW4_C >= APP_SOP_DISCHARGE_TEMP_ROW5_C) || \
+    (APP_SOP_DISCHARGE_TEMP_ROW5_C >= APP_SOP_DISCHARGE_TEMP_ROW6_C) || \
+    (APP_SOP_DISCHARGE_TEMP_ROW6_C >= APP_SOP_DISCHARGE_TEMP_ROW7_C) || \
+    (APP_SOP_DISCHARGE_TEMP_ROW7_C >= APP_SOP_DISCHARGE_TEMP_ROW8_C) || \
+    (APP_SOP_DISCHARGE_TEMP_ROW8_C >= APP_SOP_DISCHARGE_TEMP_ROW9_C)
+#error "Invalid SOP discharge temperature boundaries"
+#endif
+
+#if (APP_SOP_CHARGE_TEMP_MIN_C < -128) || (APP_SOP_CHARGE_TEMP_MAX_C > 127) || \
+    (APP_SOP_CHARGE_TEMP_MIN_C >= APP_SOP_CHARGE_TEMP_ROW1_C) || \
+    (APP_SOP_CHARGE_TEMP_ROW1_C >= APP_SOP_CHARGE_TEMP_ROW2_C) || \
+    (APP_SOP_CHARGE_TEMP_ROW2_C >= APP_SOP_CHARGE_TEMP_ROW3_C) || \
+    (APP_SOP_CHARGE_TEMP_ROW3_C >= APP_SOP_CHARGE_TEMP_ROW4_C) || \
+    (APP_SOP_CHARGE_TEMP_ROW4_C >= APP_SOP_CHARGE_TEMP_ROW5_C) || \
+    (APP_SOP_CHARGE_TEMP_ROW5_C >= APP_SOP_CHARGE_TEMP_ROW6_C) || \
+    (APP_SOP_CHARGE_TEMP_ROW6_C >= APP_SOP_CHARGE_TEMP_MAX_C)
+#error "Invalid SOP charge temperature boundaries"
+#endif
+
+#if (APP_SOP_RECHARGE_TEMP_MIN_C < -128) || (APP_SOP_RECHARGE_TEMP_MAX_C > 127) || \
+    (APP_SOP_RECHARGE_TEMP_MIN_C >= APP_SOP_RECHARGE_TEMP_ROW1_C) || \
+    (APP_SOP_RECHARGE_TEMP_ROW1_C >= APP_SOP_RECHARGE_TEMP_MAX_C)
+#error "Invalid SOP recharge temperature boundaries"
+#endif
+
+#if (APP_SOP_HIGH_TEMP_C < -128) || (APP_SOP_HIGH_TEMP_C > 127)
+#error "Invalid SOP high temperature switch"
+#endif
 
 /*
  * 放电 SOP 三维表：依次为 10s/30s/持续档、10个温度区间、11个SOC区间。
  * 图片中的电流单位为A，固件输出单位为0.1A，因此录入值乘10；例如125A写为1250。
  * SOC列按<=5%、>5~10%、>10~20%、>20~30%、>30~40%、>40~50%、>50~60%、
- * >60~70%、>70~80%、>80~90%、>90~100%排列。温度区间见每行末尾注释。
+ * >60~70%、>70~80%、>80~90%、>90~100%排列。行注释为默认温度，实际分档由app_param.h配置。
  */
 const float	afdischarge_sop_table[3][10][11] = {
 	// 10s档
@@ -61,29 +126,29 @@ const float	afdischarge_sop_table[3][10][11] = {
 
 /*
  * 充电 SOP 二维表：7个温度区间×11个SOC区间，表格原单位A，代码单位0.1A，录入时乘10。
- * SOC=0没有单独区间，运行时按最低SOC列处理；超出温度范围时由 GetChargeSOPLevel() 返回0。
+ * SOC=0没有单独区间，运行时按最低SOC列处理；行注释为默认温度，实际分档由app_param.h配置。
  */
 const float	afcharge_sop_table[7][11] = {
-	// -10℃≤T<0℃：各SOC区间均为0.5A
-	{5,5,5,5,5,5,5,5,5,5,5},
+	// -10℃≤T<0℃：0~5%为0.5A，其余SOC区间为1A
+	{5,10,10,10,10,10,10,10,10,10,10},
 	// 0℃≤T<10℃
-	{15,15,15,30,30,30,30,30,30,30,30},
+	{15,15,90,90,90,90,90,90,60,90,30},
 	// 10℃≤T<20℃
-	{15,15,30,60,120,200,230,150,120,60,60},
+	{15,15,180,180,180,180,180,180,90,90,60},
 	// 20℃≤T<30℃
-	{15,15,30,60,120,200,230,150,120,60,60},
+	{15,15,300,300,300,300,300,300,210,150,60},
 	// 30℃≤T<40℃
-	{15,15,30,60,120,200,230,150,120,60,60},
+	{15,15,300,300,300,300,300,300,210,150,60},
 	// 40℃≤T<50℃
-	{15,15,30,60,60,60,60,60,60,60,60},
+	{15,15,120,120,120,120,120,120,120,60,60},
 	// 50℃≤T<55℃
-	{15,15,15,15,15,15,15,15,15,15,15}
+	{15,15,15,30,30,30,30,30,30,30,30}
 };
 
-/* 反馈 SOP 表：行依次为-10℃≤T<0℃、0℃≤T<60℃；列为最高单体电压≤4200mV、>4200mV。 */
+/* 反馈 SOP 表：温度范围由app_param.h配置；列分别为SOC<=95%和SOC>95%。单位0.1A。 */
 static const uint16_t au16feedback_sop_table[2][2] = {
-	{30, 0},   // -10℃≤T<0℃：≤4200mV限3.0A，>4200mV禁止
-	{300, 0}   // 0℃≤T<60℃：≤4200mV限30.0A，>4200mV禁止
+	{30, 0},   // -10℃≤T<0℃：SOC<=95%限3.0A，否则0A
+	{300, 0}   // 0℃≤T<60℃：SOC<=95%限30.0A，否则0A
 };
 
 /*
@@ -138,44 +203,44 @@ void SOP_Get_DischargeTempSOC_Level(uint8_t u8soc, int8_t s8temp)
 		gt_app_sop.tbms_discharge_level.u8soc_level = 10;
 	}
 
-	/* 选择温度行；本函数只处理不低于-25℃的有效查表温度。 */
-	if(s8temp < -10) // T<-10℃ -> 第0行（表格下限为-25℃）
+	/* 选择温度行；有效温度下限由调用方检查。 */
+	if(s8temp < APP_SOP_DISCHARGE_TEMP_ROW1_C) // 第0行
 	{
 		gt_app_sop.tbms_discharge_level.u8temp_level = 0;
 	}
-	else if(s8temp < 0) // -10℃≤T<0℃ -> 第1行
+	else if(s8temp < APP_SOP_DISCHARGE_TEMP_ROW2_C) // 第1行
 	{
 		gt_app_sop.tbms_discharge_level.u8temp_level = 1;
 	}
-	else if(s8temp < 10) // 0℃≤T<10℃ -> 第2行
+	else if(s8temp < APP_SOP_DISCHARGE_TEMP_ROW3_C) // 第2行
 	{
 		gt_app_sop.tbms_discharge_level.u8temp_level = 2;
 	}
-	else if(s8temp < 20) // 10℃≤T<20℃ -> 第3行
+	else if(s8temp < APP_SOP_DISCHARGE_TEMP_ROW4_C) // 第3行
 	{
 		gt_app_sop.tbms_discharge_level.u8temp_level = 3;
 	}
-	else if(s8temp < 30) // 20℃≤T<30℃ -> 第4行
+	else if(s8temp < APP_SOP_DISCHARGE_TEMP_ROW5_C) // 第4行
 	{
 		gt_app_sop.tbms_discharge_level.u8temp_level = 4;
 	}
-	else if(s8temp < 40) // 30℃≤T<40℃ -> 第5行
+	else if(s8temp < APP_SOP_DISCHARGE_TEMP_ROW6_C) // 第5行
 	{
 		gt_app_sop.tbms_discharge_level.u8temp_level = 5;
 	}
-	else if(s8temp < 50) // 40℃≤T<50℃ -> 第6行
+	else if(s8temp < APP_SOP_DISCHARGE_TEMP_ROW7_C) // 第6行
 	{
 		gt_app_sop.tbms_discharge_level.u8temp_level = 6;
 	}
-	else if(s8temp < 55) // 50℃≤T<55℃ -> 第7行
+	else if(s8temp < APP_SOP_DISCHARGE_TEMP_ROW8_C) // 第7行
 	{
 		gt_app_sop.tbms_discharge_level.u8temp_level = 7;
 	}
-	else if(s8temp < 58) // 55℃≤T<58℃ -> 第8行
+	else if(s8temp < APP_SOP_DISCHARGE_TEMP_ROW9_C) // 第8行
 	{
 		gt_app_sop.tbms_discharge_level.u8temp_level = 8;
 	}
-	else // T≥58℃ -> 第9行
+	else // 第9行
 	{
 		gt_app_sop.tbms_discharge_level.u8temp_level = 9;
 	}
@@ -194,7 +259,7 @@ int16_t GetDischargeSOPLevel(int16_t s16current, uint8_t u8soc,  int8_t s8temp)
 	static unsigned long dlyTimeRecover30S = 0, dlyTimeRecoverCont = 0; // 降档计时起点，单位为250ms tick
 
 	/* 低于表格最低温度时不套用最低温行，直接返回0并清掉档位计时。 */
-	if(s8temp < SOP_DISCHARGE_MIN_TEMP_C)
+	if(s8temp < APP_SOP_DISCHARGE_TEMP_MIN_C)
 	{
 		dlyTimeUpgrade30S = gt_app_soc.u32tim_250ms_cnt;
 		dlyTimeUpgradeCont = gt_app_soc.u32tim_250ms_cnt;
@@ -310,32 +375,32 @@ void SOP_Get_ChargeTempSOC_Level(uint8_t u8soc, int8_t s8temp)
 		gt_app_sop.tbms_charge_level.u8soc_level = 10;
 	}
 
-	/* 温度采用图中左闭右开区间，覆盖-10℃到55℃之前。 */
-	if(s8temp < 0) // -10℃≤T<0℃ -> 第0行（调用方已排除低于-10℃）
+	/* 温度采用左闭右开区间；最低和最高温度由调用方检查。 */
+	if(s8temp < APP_SOP_CHARGE_TEMP_ROW1_C) // 第0行
 	{
 		gt_app_sop.tbms_charge_level.u8temp_level = 0;
 	}
-	else if(s8temp < 10) // 0℃≤T<10℃ -> 第1行
+	else if(s8temp < APP_SOP_CHARGE_TEMP_ROW2_C) // 第1行
 	{
 		gt_app_sop.tbms_charge_level.u8temp_level = 1;
 	}
-	else if(s8temp < 20) // 10℃≤T<20℃ -> 第2行
+	else if(s8temp < APP_SOP_CHARGE_TEMP_ROW3_C) // 第2行
 	{
 		gt_app_sop.tbms_charge_level.u8temp_level = 2;
 	}
-	else if(s8temp < 30) // 20℃≤T<30℃ -> 第3行
+	else if(s8temp < APP_SOP_CHARGE_TEMP_ROW4_C) // 第3行
 	{
 		gt_app_sop.tbms_charge_level.u8temp_level = 3;
 	}
-	else if(s8temp < 40) // 30℃≤T<40℃ -> 第4行
+	else if(s8temp < APP_SOP_CHARGE_TEMP_ROW5_C) // 第4行
 	{
 		gt_app_sop.tbms_charge_level.u8temp_level = 4;
 	}
-	else if(s8temp < 50) // 40℃≤T<50℃ -> 第5行
+	else if(s8temp < APP_SOP_CHARGE_TEMP_ROW6_C) // 第5行
 	{
 		gt_app_sop.tbms_charge_level.u8temp_level = 5;
 	}
-	else // 50℃≤T<55℃ -> 第6行（调用方已排除55℃及以上）
+	else // 第6行
 	{
 		gt_app_sop.tbms_charge_level.u8temp_level = 6;
 	}
@@ -344,7 +409,7 @@ void SOP_Get_ChargeTempSOC_Level(uint8_t u8soc, int8_t s8temp)
 int16_t GetChargeSOPLevel(uint8_t u8soc, int8_t s8temp)
 {
 	int16_t s16sop_current = 0; // 查表得到的充电 SOP 限值，单位0.1A
-	if((s8temp < -10) || (s8temp >= 55)) // 图片覆盖-10℃≤T<55℃，范围外禁止充电
+	if((s8temp < APP_SOP_CHARGE_TEMP_MIN_C) || (s8temp >= APP_SOP_CHARGE_TEMP_MAX_C))
 	{
 		return 0;
 	}
@@ -358,8 +423,8 @@ int16_t GetChargeSOPLevel(uint8_t u8soc, int8_t s8temp)
 
 
 /*
- * 对外发布最大放电电流时做斜率限制：每到 BMS_CUR_RATE_OF_CHANGE×4 个 250ms tick，
- * 只向目标限值增加或减少一个 0.1A 档位，避免限值瞬间跳变。
+ * 对外发布最大放电电流时做斜率限制：每经过500ms，向目标限值移动1.0A；
+ * 最后一步贴齐目标值，避免按整安步进越过0.1A精度的查表目标。
  */
 void SOP_GetDischargeSopCurrent(int16_t s16current)
 {
@@ -376,47 +441,61 @@ void SOP_GetDischargeSopCurrent(int16_t s16current)
 
 	if(gt_app_sop.s16max_discharge_current01A > s16current) // 当前输出高于目标，按斜率逐步收紧
 	{
-		/* 目标限值变小，等待一个斜率周期后把当前输出减小0.1A。 */
+		/* 目标限值变小，按1.0A步进收紧，并在目标附近精确贴齐。 */
 		if(1 == app_soc_delay(1, // judge恒为真，启动一次输出斜率等待
 		 &dlyflag, // 保存当前斜率调整计时起点
-		 BMS_CUR_RATE_OF_CHANGE * 4, // 宏定义秒数换算为250ms tick
+		 BMS_CUR_RATE_OF_CHANGE_INTERVAL_TICKS, // 等待500ms（2个250ms tick）
 		 0, // 当前尚未发生本次斜率步进
 		 1)) // 到期后允许本次调整
 		{
-			gt_app_sop.s16max_discharge_current01A --; // 限流收紧一个0.1A档位
+			if((gt_app_sop.s16max_discharge_current01A - s16current) > BMS_CUR_RATE_OF_CHANGE_STEP_01A)
+			{
+				gt_app_sop.s16max_discharge_current01A -= BMS_CUR_RATE_OF_CHANGE_STEP_01A;
+			}
+			else
+			{
+				gt_app_sop.s16max_discharge_current01A = s16current;
+			}
 		}
 	}
 	else if(gt_app_sop.s16max_discharge_current01A < s16current) // 当前输出低于目标，按斜率逐步放宽
 	{
-		/* 目标限值变大时也逐档恢复，避免允许放电电流突然跃升。 */
+		/* 目标限值变大时也按1.0A步进恢复，最后一步精确贴齐目标。 */
 		if(1 == app_soc_delay(1, // judge恒为真，启动一次输出斜率等待
 		 &dlyflag, // 复用斜率计时器记录本次步进起点
-		 BMS_CUR_RATE_OF_CHANGE * 4, // 按相同周期限制放宽速度
+		 BMS_CUR_RATE_OF_CHANGE_INTERVAL_TICKS, // 等待500ms（2个250ms tick）
 		 0, // 当前尚未发生本次斜率步进
 		 1)) // 到期后允许本次调整
 		{
-			gt_app_sop.s16max_discharge_current01A ++; // 限流放宽一个0.1A档位
+			if((s16current - gt_app_sop.s16max_discharge_current01A) > BMS_CUR_RATE_OF_CHANGE_STEP_01A)
+			{
+				gt_app_sop.s16max_discharge_current01A += BMS_CUR_RATE_OF_CHANGE_STEP_01A;
+			}
+			else
+			{
+				gt_app_sop.s16max_discharge_current01A = s16current;
+			}
 		}
 	}
 }
 
-/* 按反馈 SOP 表计算回充限值；温度或电压超出表格范围时将限值置0。电流单位为0.1A。 */
-void SOP_GetRechargeSOPCurrent(uint16_t u16max_volt, int8_t s8max_temp, int8_t s8min_temp)
+/* 按反馈 SOP 表计算回充限值；温度超限或SOC>95%时置0。电流单位为0.1A。 */
+void SOP_GetRechargeSOPCurrent(uint8_t u8soc, int8_t s8max_temp, int8_t s8min_temp)
 {
 	uint8_t u8temp_level;
-	uint8_t u8volt_level;
+	uint8_t u8soc_level;
 
-	/* 温度行按电芯温度范围选择：有电芯低于0℃时使用低温行，否则使用常温行。 */
-	if((s8min_temp < -10) || (s8max_temp >= 60)) // 低于-10℃或达到60℃，超出表格温度范围
+	/* 温度超出配置范围时禁止回充。 */
+	if((s8min_temp < APP_SOP_RECHARGE_TEMP_MIN_C) ||
+	   (s8max_temp >= APP_SOP_RECHARGE_TEMP_MAX_C))
 	{
 		gt_app_sop.u16max_recharge_current01A = 0;
 		return;
 	}
-	u8temp_level = (s8min_temp < 0) ? 0U : 1U; // 任一电芯低于0℃时按低温行限流
+	u8temp_level = (s8min_temp < APP_SOP_RECHARGE_TEMP_ROW1_C) ? 0U : 1U;
 
-	/* 电压列：最高单体恰为4200mV时仍属于允许列，超过4200mV才禁止回充。 */
-	u8volt_level = (u16max_volt <= 4200U) ? 0U : 1U;
-	gt_app_sop.u16max_recharge_current01A = au16feedback_sop_table[u8temp_level][u8volt_level];
+	u8soc_level = (u8soc <= 95U) ? 0U : 1U;
+	gt_app_sop.u16max_recharge_current01A = au16feedback_sop_table[u8temp_level][u8soc_level];
 }
 
 
@@ -427,14 +506,14 @@ void SOP_GetChargeSopCurrent(int16_t s16current)
 }
 
 /* 每个 SOC 计算周期的 SOP 总调度：选择评估温度，更新放电、充电和回充电流限值。 */
-void app_sop_task(int8_t s8max_temp, int8_t s8min_temp, uint8_t u8soc, int32_t s32current, uint16_t u16max_voltage)
+void app_sop_task(int8_t s8max_temp, int8_t s8min_temp, uint8_t u8soc, int32_t s32current)
 {
 	uint8_t u8soc_temp = 0; // 本周期使用的SOC查表值，单位%
 	int8_t s8temp = 0; // 根据高温分界选择出的SOP评估温度，单位℃
 	int16_t s16sopcurrent = 0, s16discharge_current = 0; // 充/放电SOP中间值，单位0.1A
 
 	/* 极热时用最高温度限制能力；其余情况用最低温度，优先反映最弱电芯。 */
-	if(s8max_temp > BMS_SOP_HIGH_TEMP) // 最高温超过高温分界时，以最高温作为限值查表温度
+	if(s8max_temp > APP_SOP_HIGH_TEMP_C) // 最高温超过高温分界时，以最高温作为限值查表温度
 	{
 		s8temp = s8max_temp; // 高温保护侧优先使用最高温度
 	}
@@ -447,7 +526,7 @@ void app_sop_task(int8_t s8max_temp, int8_t s8min_temp, uint8_t u8soc, int32_t s
 
 	/* 放电能力先按持续时间/温度/SOC 查表。低于表格下限时直接归零，不走斜率缓降。 */
 	s16discharge_current = GetDischargeSOPLevel(s32current, u8soc_temp, s8temp); // 获取当前放电持续时间档的允许电流
-	if(s8temp < SOP_DISCHARGE_MIN_TEMP_C) // 低于-25℃超出表格范围，放电限值立即归零
+	if(s8temp < APP_SOP_DISCHARGE_TEMP_MIN_C) // 低于配置下限时，放电限值立即归零
 	{
 		gt_app_sop.s16max_discharge_current01A = 0; // 直接发布0A，不等待斜率调节周期
 	}
@@ -460,5 +539,13 @@ void app_sop_task(int8_t s8max_temp, int8_t s8min_temp, uint8_t u8soc, int32_t s
 	s16sopcurrent = GetChargeSOPLevel(u8soc_temp, s8temp); // 获取当前温度/SOC档的允许充电电流
 	SOP_GetChargeSopCurrent(s16sopcurrent); // 直接发布充电查表限值
 
-	SOP_GetRechargeSOPCurrent(u16max_voltage, s8max_temp, s8min_temp); // 单独计算低温/高电压回充能力
+	SOP_GetRechargeSOPCurrent(u8soc_temp, s8max_temp, s8min_temp); // 按温度和SOC计算回充能力
+
+	/* 并联运行时，放电SOP按本机压差和放电故障门控；充电及回充SOP不使用该并联门控。 */
+	if ((app_parallel_id_is_enabled() != 0U) &&
+		(app_parallel_id_is_ready() != 0U) &&
+		(app_parallel_cmd_en() == 0U))
+	{
+		gt_app_sop.s16max_discharge_current01A = 0;
+	}
 }

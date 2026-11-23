@@ -19,14 +19,17 @@
 #define DUCAR_CAN_EXT_ID_MASK           ((uint32_t)0x1FFFFFFFUL)
 #define DUCAR_CAN_DEFAULT_PRIORITY      ((uint8_t)6U)
 /*
- * 当前固件实例的BMS源地址。默认PACK地址为0x16；构建其他PACK固件时，
- * 可通过编译器预定义DUCAR_CAN_BMS_A_ADDRESS覆盖，例如设为0x17。
+ * BMS地址的上电默认值；实际收发使用g_ducar_can_bms_address。
+ * 可通过编译器预定义默认地址，后续通信分配地址时更新运行变量。
  */
 #ifndef DUCAR_CAN_BMS_A_ADDRESS
 #define DUCAR_CAN_BMS_A_ADDRESS         0x16U
 #endif
 #define DUCAR_CAN_PC_ADDRESS            ((uint8_t)0x3AU)
 #define DUCAR_CAN_GLOBAL_ADDRESS        ((uint8_t)0xFFU)
+
+/* 当前APP实例的BMS地址，供未来通信分配机制更新。 */
+extern volatile uint8_t g_ducar_can_bms_address;
 
 /*
  * 协议使用的PDU格式和PF：
@@ -39,7 +42,8 @@
 #define DUCAR_CAN_PF_TP_DT              ((uint8_t)0xEBU)
 
 #define DUCAR_CAN_PF_F2                 ((uint8_t)0xF2U)
-#define DUCAR_CAN_PF_RESET              ((uint8_t)0x08U) /* 0800：Data0基础控制，Data1产品模式。 */
+#define DUCAR_CAN_PF_RESET              ((uint8_t)0x08U) /* 0800：Data0基础控制/清故障日志，Data1产品模式。 */
+#define DUCAR_CAN_CMD_CLEAR_FAULT_LOG   ((uint8_t)0x0FU) /* 0800 Data0=0F：清除故障日志。 */
 #define DUCAR_CAN_PF_MOS_CONTROL        ((uint8_t)0x09U)
 #define DUCAR_CAN_PF_STANDBY_CURRENT    ((uint8_t)0x0AU)
 #define DUCAR_CAN_PF_DEBUG_V            ((uint8_t)0x0BU)
@@ -128,9 +132,9 @@ void ducar_can_bus_timer_handle(void);
 bool ducar_can_detd_tx_window_is_active(void);
 /* 调度50ms报文F218。 */
 void ducar_can_50ms_task(void);
-/* 按GD7627节拍槽调度100ms报文。 */
+/* 按本工程周期槽调度100ms报文。 */
 void ducar_can_100ms_task(void);
-/* 按GD7627节拍槽调度200ms报文。 */
+/* 按本工程周期槽调度200ms报文。 */
 void ducar_can_200ms_task(void);
 /* 按项目节拍槽调度500ms报文。 */
 void ducar_can_500ms_task(void);
@@ -142,6 +146,8 @@ void ducar_can_protocol_receive(const t_can_packet *ptCanPacket);
 void ducar_can_control_reply_task(void);
 /* CAL2活跃或仍有待发送扩展应答时禁止STOP。 */
 bool ducar_can_cal2_allows_sleep(void);
+/* 普通CAN的TP发送、接收或日志下载仍在进行时返回true。 */
+bool ducar_can_transport_is_active(void);
 void ducar_can_get_tx_queue_diagnostics(ducar_can_tx_queue_diag_t *diagnostics);
 
 /* 判断29位CAN ID的源地址是否为上位机PC地址0x3A。 */

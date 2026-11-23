@@ -978,6 +978,31 @@
               <FileType>5</FileType>
               <FilePath>..\User_Src\App\app_can.h</FilePath>
             </File>
+            <File>
+              <FileName>app_id_assign.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\User_Src\App\app_id_assign.c</FilePath>
+            </File>
+            <File>
+              <FileName>app_id_assign.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\User_Src\App\app_id_assign.h</FilePath>
+            </File>
+            <File>
+              <FileName>app_parallel_status.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\User_Src\App\app_parallel_status.c</FilePath>
+            </File>
+            <File>
+              <FileName>app_parallel_id.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\User_Src\App\app_parallel_id.c</FilePath>
+            </File>
+            <File>
+              <FileName>app_parallel_status.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\User_Src\App\app_parallel_status.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
@@ -2407,7 +2432,7 @@
                   <RVCTZI>0</RVCTZI>
                   <RVCTOtherData>0</RVCTOtherData>
                   <ModuleSelection>0</ModuleSelection>
-                  <IncludeInBuild>0</IncludeInBuild>
+                  <IncludeInBuild>1</IncludeInBuild>
                   <AlwaysBuild>0</AlwaysBuild>
                   <GenerateAssemblyFile>0</GenerateAssemblyFile>
                   <AssembleAssemblyFile>0</AssembleAssemblyFile>

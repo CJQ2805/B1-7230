@@ -125,5 +125,7 @@ bool ducar_iap_prepare_boot_wait_package(void);
 bool ducar_iap_cancel_boot_wait_package(void);
 /* 判断UART IAP是否正在升级。 */
 bool ducar_iap_is_busy(void);
+/* CCCC已提交时，禁止任何APP侧协议重新擦写APP2。 */
+bool ducar_iap_is_boot_move_pending(void);
 
 #endif

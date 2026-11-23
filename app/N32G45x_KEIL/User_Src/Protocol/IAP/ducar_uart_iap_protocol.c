@@ -9,6 +9,8 @@
  */
 #include "Protocol/IAP/ducar_uart_iap_protocol.h"
 #include "Protocol/Comm/ducar_uart_protocol.h"
+#include "Protocol/IAP/ducar_can_iap_protocol.h"
+#include "Protocol/UDS/UDSLogic/uds_upgrade.h"
 
 #include "App/app_bms_fault.h"
 #include "App/app_flash_map.h"
@@ -652,6 +654,15 @@ static void ducar_iap_handle_update_start(const ducar_iap_frame_t *frame)
         return;
     }
 
+    /* UART、CAN和UDS共用APP2；CCCC已提交或其他协议占用时拒绝新擦除。 */
+    if (ducar_can_iap_protocol_is_busy() ||
+        uds_upgrade_app2_is_busy() ||
+        ducar_iap_is_boot_move_pending())
+    {
+        ducar_iap_send_status(DUCAR_IAP_CMD_UPDATE_START, DUCAR_IAP_NAK);
+        return;
+    }
+
     /* 升级前尽力保存SOC；保存失败不阻断固件接收。 */
     (void)app_bms_soc_save_for_transition();
     ducar_iap_reset_update_state();
@@ -811,11 +822,15 @@ static void ducar_iap_handle_jump(void)
     {
         if (!d_uart_wait_tx_complete())
         {
+            /* CCCC已写入，ACK超时不能让APP继续运行并接受另一份覆盖包。 */
+            s_ducar_iap_reset_pending = 1U;
             return;
         }
         d_timer_delay_ms(2U); /* 多留一点点时间给上位机收到ACK，再复位进入BOOT搬运。 */
-        s_ducar_iap_reset_pending = 1U;
     }
+
+    /* CCCC已经提交；即使ACK没能排队，也必须复位让BOOT处理已验证镜像。 */
+    s_ducar_iap_reset_pending = 1U;
 }
 
 /* 判断命令字是否属于IAP协议。 */
@@ -949,15 +964,25 @@ bool ducar_iap_is_busy(void)
     return (s_ducar_iap_state != APP_IAP_STATE_IDLE);
 }
 
+/* 检查BOOT搬运标志；该标志一旦为CCCC，APP2就是已提交的升级镜像。 */
+bool ducar_iap_is_boot_move_pending(void)
+{
+    return (ducar_iap_get_upgrade_flag() == APP_IAP_UPGRADE_FLAG_NEED_MOVE);
+}
+
 /* 复制IAP解析器、元数据和收包状态，供调试窗口查看升级卡在哪一步。 */
 
 
 
 #define DUCAR_IAP_PROTOCOL_ONLINE_TIMEOUT_MS ((uint32_t)5000UL)
+#define DUCAR_IAP_FRAME_TIMEOUT_MS           ((uint32_t)1000UL)
+#define DUCAR_IAP_SESSION_TIMEOUT_MS         ((uint32_t)30000UL)
 
 static ducar_iap_parser_t s_ducar_iap_protocol_parser;
 static uint8_t s_ducar_iap_protocol_online;
 static uint32_t s_ducar_iap_protocol_last_rx_ms;
+static uint32_t s_ducar_iap_protocol_last_byte_ms;
+static uint32_t s_ducar_iap_protocol_last_frame_ms;
 
 /* 根据最近UART接收活动更新协议在线状态。 */
 static void ducar_iap_protocol_update_online_state(void)
@@ -974,6 +999,7 @@ static void ducar_iap_protocol_mark_rx_activity(void)
 {
     s_ducar_iap_protocol_online = 1U;
     s_ducar_iap_protocol_last_rx_ms = d_timer_get_ms();
+    s_ducar_iap_protocol_last_byte_ms = s_ducar_iap_protocol_last_rx_ms;
 }
 
 /* 初始化IAP协议、升级状态和UART在线状态。 */
@@ -984,6 +1010,8 @@ void ducar_iap_protocol_init(void)
     ducar_iap_mark_app_valid_if_default();
     s_ducar_iap_protocol_online = 0U;
     s_ducar_iap_protocol_last_rx_ms = 0UL;
+    s_ducar_iap_protocol_last_byte_ms = 0UL;
+    s_ducar_iap_protocol_last_frame_ms = 0UL;
     s_ducar_iap_reset_pending = 0U;
 }
 
@@ -1026,6 +1054,7 @@ void ducar_iap_protocol_task(void)
     uint8_t u8ReceivedByte;
     ducar_iap_frame_t tIapFrame;
     ducar_iap_parse_result_t eParseResult;
+    uint32_t u32CurrentTimeMs;
 
     if (s_ducar_iap_reset_pending != 0U)
     {
@@ -1034,6 +1063,22 @@ void ducar_iap_protocol_task(void)
         return;
     }
     ducar_iap_protocol_update_online_state();
+    u32CurrentTimeMs = d_timer_get_ms();
+
+    /* 半帧超过1秒未继续到达时丢弃解析上下文，避免新会话拼接旧字节。 */
+    if ((s_ducar_iap_protocol_parser.state != 0U) &&
+        ((uint32_t)(u32CurrentTimeMs - s_ducar_iap_protocol_last_byte_ms) >= DUCAR_IAP_FRAME_TIMEOUT_MS))
+    {
+        ducar_iap_parser_init(&s_ducar_iap_protocol_parser);
+    }
+
+    /* 升级会话30秒没有完整IAP帧则释放状态，后续Update Start可重新开始。 */
+    if (ducar_iap_is_busy() &&
+        ((uint32_t)(u32CurrentTimeMs - s_ducar_iap_protocol_last_frame_ms) >= DUCAR_IAP_SESSION_TIMEOUT_MS))
+    {
+        ducar_iap_parser_init(&s_ducar_iap_protocol_parser);
+        ducar_iap_reset_update_state();
+    }
 
     while (d_uart_read_byte(&u8ReceivedByte) != 0U)
     {
@@ -1051,7 +1096,13 @@ void ducar_iap_protocol_task(void)
         {
             if (ducar_iap_is_protocol_cmd(tIapFrame.cmd))
             {
+                s_ducar_iap_protocol_last_frame_ms = d_timer_get_ms();
                 ducar_iap_handle_frame(&tIapFrame);
+                /* JUMP成功后CCCC已提交，立即停止处理队列中可能残留的覆盖请求。 */
+                if (s_ducar_iap_reset_pending != 0U)
+                {
+                    return;
+                }
             }
             else if (!ducar_iap_is_busy())
             {

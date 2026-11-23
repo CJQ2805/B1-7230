@@ -13,10 +13,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* 选择充放电 SOP 计算温度的高温分界，单位 ℃。 */
-#define BMS_SOP_HIGH_TEMP   40       		// 超过此温度分界时使用最高温度选择SOP温度档，单位℃
-/* 输出放电限流每改变一个0.1A档位的延时参数；调用处乘4个250ms tick，即实际间隔50秒。原行尾“ms”注释单位不准确。 */
-#define BMS_CUR_RATE_OF_CHANGE  50 		// 斜率调整周期，单位秒；每周期改变0.1A
+/* 放电SOP输出斜率：每500ms最多改变1.0A；内部限值单位为0.1A。 */
+#define BMS_CUR_RATE_OF_CHANGE_INTERVAL_TICKS  2U   // 250ms计数器的2个tick，即500ms
+#define BMS_CUR_RATE_OF_CHANGE_STEP_01A        10   // 每次步进1.0A（10×0.1A）
 
 /* 放电电流持续时间档；枚举值直接用作放电表第一维的索引。 */
 enum _Cur_level_e{
@@ -54,7 +53,7 @@ struct  _app_sop_t{
 };
 extern struct  _app_sop_t   gt_app_sop;
 /* 输入最大/最小温度℃、SOC%、带符号电流mA和最高单体电压mV，更新全局 SOP 输出。 */
-void app_sop_task(int8_t s8max_temp, int8_t s8min_temp, uint8_t u8soc, int32_t s32current, uint16_t u16max_voltage);
+void app_sop_task(int8_t s8max_temp, int8_t s8min_temp, uint8_t u8soc, int32_t s32current);
 
 #endif
 

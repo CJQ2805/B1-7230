@@ -54,7 +54,7 @@ The compensation point of the fast air
 #define FCC_SET_MODE             			   1                     //0:CC充电模式     1:CV充电模式
 #define SOC_FCC_SET_DELAY_TIME			       5		             //S FCC的阈值时间，达到该电压和小于该电流时，持续该时间达满充
 
-#define SOC_DISCHG_KEEP_ONE_VOLTAGE        3000
+#define SOC_DISCHG_KEEP_ONE_VOLTAGE        3150
 /*
 静置时ocv参数设置
 */
@@ -71,7 +71,7 @@ The compensation point of the fast air
 FCC判断阈值 CV模式
 The FCC determines the threshold
 */
-#define SOC_FCC_ACCELERATE_CONDITION			(((s32current > S0C_FCC_SET_STOP_CURRENT_MIN)&& (s32current < SOC_FCC_SET_STOP_CURRENT_MAX) && (u32cell_arv_volt > SOC_FCC_SET_MIN_CELL_VOLTAGE)) )
+#define SOC_FCC_ACCELERATE_CONDITION			(((s32current > S0C_FCC_SET_STOP_CURRENT_MIN)&& (s32current < SOC_FCC_SET_STOP_CURRENT_MAX) && (u32cell_arv_volt > SOC_FCC_SET_MIN_CELL_VOLTAGE)))
 #define SOC_FCC_SET_MIN_CELL_VOLTAGE            4050                 //mV   FCC的阈值电压，达到该电压和小于该电流时，持续该时间达满充
 #define SOC_FCC_SET_STOP_CURRENT_MAX		    1000                 //mA   FCC的阈值电流，达到该电压和小于该电流时，持续该时间达满充
 #define S0C_FCC_SET_STOP_CURRENT_MIN            80		             //mA   FCC电流下限值，认为有充电的值。
@@ -159,6 +159,8 @@ struct _app_soc_t{
 
 extern struct _app_soc_t  gt_app_soc;
 
+/* 故障清除命令调用：清除满充锁存及其置位/复位计时基线。 */
+void app_soc_clear_full_charge_latch(void);
 
 
 unsigned char app_soc_voltage_to_soc(unsigned short u16bat_val,const unsigned short *pu16cell_volt_table);
@@ -174,7 +176,7 @@ unsigned int  app_soc_voltage_to_capacity(unsigned short u16bat_val,const unsign
 unsigned char app_soc_delay(unsigned char jude_stat,unsigned long* s32time_base,unsigned long u32delay_time , unsigned char setflag, unsigned char targetflag);
 int app_soc_data_handle(unsigned short u16max_cellVolt, unsigned short u16min_cellVolt,
 					 const unsigned short *pu16cell_volt_table,
-					 long s32current, unsigned char* au8tim_250ms_flag,
+						 long s32current, unsigned char* au8tim_250ms_flag,
 					 int s16cell_min_temp, 
 				     int s16cell_max_temp,
 					 unsigned char u8ucv_flag,

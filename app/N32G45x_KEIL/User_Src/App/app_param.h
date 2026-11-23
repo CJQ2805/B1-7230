@@ -9,8 +9,7 @@
 #define APP_PARAM_MANUFACTURER_NAME "DUCAR"
 
 /* 电池/平台型号，用于升级文件命名、通信识别和项目区分。 */
-#define APP_PARAM_BAT_TYPE          "7230B1"
-
+#define APP_PARAM_BAT_TYPE          "B1-7230"
 
 /* 额定电压   mV*/
 #define APP_PARAM_BAT_VOLTAGE          72000   //72V
@@ -20,10 +19,14 @@
 /* 最大允许充电电压，单位mV；当前20S电池包配置为85.6V。 */
 #define APP_PARAM_MAX_CHARGE_VOLTAGE_MV 85000U
 
+
+
 /* 宗申B1主动通信：KEY缺失时，电流归零达到该时间后停止发送，单位ms。 */
-#define APP_PARAM_ZS_B1_TX_IDLE_TIMEOUT_MS (1UL * 60UL * 1000UL)
+#define APP_PARAM_ZS_B1_TX_IDLE_TIMEOUT_MS (20UL * 1000UL)
 /* UDS诊断总开关：0表示不初始化、不收发且不运行UDS；1表示启用安全诊断服务。 */
 #define APP_PARAM_UDS_ENABLE           1U
+/* 并联编址使能配置位（非物理GPIO管脚）：1启用，0禁用；默认关闭。 */
+#define APP_PARAM_PARALLEL_ENABLE      0U
 
 /*
  * 硬件版本：
@@ -41,10 +44,10 @@
  * 出包T版本：
  * 打包文件名使用，显示时带T前缀，用于临时调试版本，不进行生产只迭代小版本，生产时大版本V+1的情况下，小版本必须置1，例如T1,最小单位为1。 */
 /* 升级包T版本字符串，用于生成升级文件名。 */
-#define APP_PARAM_PACKAGE_T_VERSION "T19"
+#define APP_PARAM_PACKAGE_T_VERSION "T24"
 
-/* DUCAR CAN通信协议版本：A0.9=0x09，F200的Data3返回此标识。 */
-#define APP_PARAM_CAN_PROTOCOL_VERSION 0xCU
+/* DUCAR CAN通信协议版本：A1.4=0x0E，F200的Data3返回此标识。 */
+#define APP_PARAM_CAN_PROTOCOL_VERSION 0x0EU
 
 /*
  * BMS硬件拓扑配置：
@@ -155,11 +158,14 @@
  *   这些参数决定APP多久进入STOP、RTC多久巡检一次以及串口空闲判定相关策略。
  *   时钟切换超时属于低功耗流程固定保护常量，保留在app_low_power_manage.c中。
  */
-/* 连续满足低功耗条件后进入STOP的等待时间，单位秒。 */
-#define APP_LOW_POWER_IDLE_SECONDS        60U
+/* 连续满足低功耗条件后进入STOP的等待时间，单位秒；ZS停发后仍完整等待此时间。 */
+#define APP_LOW_POWER_IDLE_SECONDS        30U
+/* DETC/DETD均不在位时，请求软关机前的独立等待时间，单位秒。 */
+#define APP_LOW_POWER_AUTO_SHUTDOWN_SECONDS 60U
 /* STOP期间RTC主动唤醒巡检周期，单位秒。最大不能超过25S，否则会看门狗复位 */
 #define APP_LOW_POWER_RTC_WAKE_SECONDS    20U
 /* SOC单体OCV查表数据：索引0~100对应0%~100% SOC，表值单位mV。 */
+/* 首行对应索引0~10。 */
 #define APP_PARAM_SOC_CELL_OCV_TABLE \
     { \
         2801U, 3010U, 3132U, 3191U, 3216U, 3231U, 3244U, 3259U, 3276U, 3296U, \

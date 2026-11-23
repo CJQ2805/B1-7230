@@ -6,9 +6,9 @@
 void SOC_FCCHandle(long current, unsigned int max_mv, unsigned char uv,
                    unsigned char ov, unsigned int min_mv);
 void app_sop_task(int8_t max_temp, int8_t min_temp, uint8_t soc,
-                  int32_t current, uint16_t max_voltage)
+                  int32_t current)
 {
-    (void)max_temp; (void)min_temp; (void)soc; (void)current; (void)max_voltage;
+    (void)max_temp; (void)min_temp; (void)soc; (void)current;
 }
 
 int main(void)

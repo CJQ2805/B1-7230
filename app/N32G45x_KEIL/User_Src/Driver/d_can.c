@@ -73,6 +73,8 @@ static volatile uint32_t s_can_last_attempt_id;
 static volatile uint8_t s_can_last_error_code;
 static volatile uint8_t s_can_tx_fail_streak;
 static volatile uint8_t s_can_bus_online = 1U;
+/* 记录已观察到的硬件Bus-Off，等待ABOM清除BOFFL后恢复软件发送门禁。 */
+static volatile uint8_t s_can_bus_off_seen;
 
 static void d_can_tx_collect_completed(void)
 {
@@ -170,6 +172,20 @@ void d_can_service_tx(void)
     }
 
     d_can_tx_collect_completed();
+
+    /* Bus-Off期间暂停上层发送；ABOM清除硬件标志后自动解除软件离线锁存。 */
+    if (CAN_GetFlagSTS(CAN1, CAN_FLAG_BOFFL) != RESET)
+    {
+        s_can_bus_off_seen = 1U;
+        s_can_bus_online = 0U;
+    }
+    else if (s_can_bus_off_seen != 0U)
+    {
+        s_can_bus_off_seen = 0U;
+        s_can_tx_fail_streak = 0U;
+        s_can_bus_online = 1U;
+    }
+
     u32NowMs = d_timer_get_ms();
     for (u8Mailbox = 0U; u8Mailbox < D_CAN_TX_MAILBOX_COUNT; ++u8Mailbox)
     {
@@ -467,6 +483,7 @@ bool d_can_init(d_can_t *can)
     s_can_iap_silence_active = false;
     s_can_tx_fail_streak = 0U;
     s_can_bus_online = 1U;
+    s_can_bus_off_seen = 0U;
     __set_PRIMASK(primask);
 
     d_can_config_gpio();
@@ -556,6 +573,7 @@ void d_can_set_low_power_pins(void)
     d_can_set_pins_analog();
 }
 
+/* 通用CAN发送：发送ID由参数id指定，帧类型由id_type指定。 */
 static bool d_can_send_internal(d_can_t *can,
                                 uint32_t id,
                                 d_can_id_t id_type,
@@ -637,6 +655,7 @@ static bool d_can_send_internal(d_can_t *can,
     return true;
 }
 
+/* 普通CAN发送入口：发送ID由参数id指定。 */
 bool d_can_send(d_can_t *can,
                 uint32_t id,
                 d_can_id_t id_type,
@@ -646,6 +665,7 @@ bool d_can_send(d_can_t *can,
     return d_can_send_internal(can, id, id_type, data, dlc, 0U);
 }
 
+/* CAN升级发送入口：发送ID由参数id指定。 */
 bool d_can_send_iap(d_can_t *can,
                     uint32_t id,
                     d_can_id_t id_type,
@@ -843,6 +863,9 @@ void d_can_error_irq_handler(void)
     bus_off_flag = CAN_GetFlagSTS(CAN1, CAN_FLAG_BOFFL);
     if (bus_off_flag != RESET)
     {
+        /* 让任务层在硬件自动恢复后重新开放普通发送门禁。 */
+        s_can_bus_off_seen = 1U;
+        s_can_bus_online = 0U;
         /* Clear only the SCE request; keep BOFFL for hardware recovery. */
         CAN_ClearINTPendingBit(CAN1, CAN_INT_BOF);
         return;

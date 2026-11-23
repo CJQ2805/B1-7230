@@ -32,6 +32,7 @@
 #include "App/app_power_manage.h"
 #include "App/app_current_calib.h"
 #include "App/app_h_power_manage.h"
+#include "App/app_led.h"
 #include "App/app_param.h"
 #include "Protocol/IAP/ducar_uart_iap_protocol.h"
 #if (APP_PARAM_UDS_ENABLE == 1U)
@@ -65,8 +66,9 @@
  * 低功耗是否真正启用，取决于BMS_Task是否持续调用app_low_power_task()。
  */
 
-/* 空闲判定时间，单位毫秒；由APP_LOW_POWER_IDLE_SECONDS配置。 */
+/* STOP前空闲等待与自动关机等待分别计时，避免修改一个门限时意外改变另一个。 */
 #define APP_LOW_POWER_IDLE_MS            ((uint32_t)APP_LOW_POWER_IDLE_SECONDS * 1000UL)
+#define APP_LOW_POWER_AUTO_SHUTDOWN_MS   ((uint32_t)APP_LOW_POWER_AUTO_SHUTDOWN_SECONDS * 1000UL)
 #define APP_LOW_POWER_DIAG_PERIOD_MS     1000UL
 
 /* DVC1124的CC2电流采样周期为256ms，RTC巡检时等待一轮新转换后再读取。 */
@@ -332,8 +334,9 @@ static bool app_low_power_is_external_input_idle(void)
 
     app_bms_snapshot_read(&tAppBmsSnapshot);
 
-    /* 按键在位或5秒保持窗口未结束时，不允许进入STOP。 */
-    if (tAppBmsSnapshot.signal.input.mcu_sw_present != 0U)
+    /* 按键窗口或故障显示/故障后的SOC显示尚未结束时，不允许进入STOP。 */
+    if ((tAppBmsSnapshot.signal.input.mcu_sw_present != 0U) ||
+        (app_led_holds_awake() != 0U))
     {
         return false;
     }
@@ -408,11 +411,7 @@ static void app_low_power_reset_idle_state(void)
 
 static uint32_t app_low_power_target_idle_ms(void)
 {
-    /* 宗申报文无电流超时后，协议已停止周期发送，跳过额外的通用60秒等待。 */
-    if (app_can_is_zs_idle_timeout_complete())
-    {
-        return 0U;
-    }
+    /* ZS发送停止后，低功耗门禁还需连续满足配置的30秒，才允许进入STOP。 */
     return APP_LOW_POWER_IDLE_MS;
 }
 
@@ -976,7 +975,7 @@ void app_low_power_task(uint32_t elapsed_ms)
     app_bms_snapshot_t tAutoShutdownSnapshot;
     struct _app_bms_fault_t tFaultSnapshot;
     uint32_t u32TargetIdleMs;
-    const uint32_t u32AutoShutdownTargetMs = APP_LOW_POWER_IDLE_MS;
+    const uint32_t u32AutoShutdownTargetMs = APP_LOW_POWER_AUTO_SHUTDOWN_MS;
     bool bIdleAllowed;
     bool bAutoShutdownAllowed;
     bool bOcdLocked;

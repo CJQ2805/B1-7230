@@ -9,6 +9,8 @@ bool boot_upgrade_set_flag(uint32_t flag);
 bool boot_upgrade_prepare_move(uint32_t image_size, uint32_t image_crc32);
 bool boot_upgrade_prepare_app1(uint32_t image_size, uint32_t image_crc32);
 bool boot_upgrade_get_move_info(uint32_t *image_size, uint32_t *image_crc32);
+/* Validate the committed CCCC record and APP2 bytes before preserving/retrying it. */
+bool boot_upgrade_pending_move_is_valid(void);
 bool boot_upgrade_app1_ready_is_valid(void);
 bool boot_upgrade_move_backup_to_app1(void);
 

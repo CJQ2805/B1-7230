@@ -227,7 +227,7 @@ static bool boot_can_config_peripheral(void)
     return true;
 }
 
-/* 尝试将一帧放入CAN硬件邮箱；邮箱满或Bus-Off时返回失败。 */
+/* 将帧放入CAN硬件邮箱，发送ID由frame指定；邮箱满或Bus-Off时返回失败。 */
 static bool boot_can_try_transmit(const boot_can_queue_frame_t *frame)
 {
     CanTxMessage message;
@@ -337,7 +337,7 @@ static void boot_can_flush_tx(void)
     }
 }
 
-/* BOOT协议层调用的统一发送接口，先直发，失败后进入发送环形队列。 */
+/* BOOT统一发送接口：ID由frame指定；先直发，失败后进入发送环形队列。 */
 bool boot_can_send_frame(const ducar_can_frame_t *frame)
 {
     boot_can_queue_frame_t tx_frame;

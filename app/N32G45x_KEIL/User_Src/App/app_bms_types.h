@@ -226,6 +226,9 @@ typedef struct
     int32_t current_ma;                         /* 校准后电流，单位mA；保留小电流供SOC积分等使用，正数充电，负数放电。 */
     int32_t current_business_ma;                /* 死区后的业务电流，单位mA；供通信等使用。 */
     uint32_t afe_current_update_seq;            /* AFE电流成功刷新序号；用于唤醒后确认已取得新样本。 */
+    uint32_t afe_current_sample_time_ms;         /* 最近一次成功AFE电流采样时间，TIM6毫秒计数。 */
+    uint8_t afe_current_sample_valid;             /* 系统启动后至少成功采到过一次AFE电流。 */
+    uint8_t afe_current_sample_fresh;            /* 最近一次成功采样距当前不超过500ms；并联电流优先逻辑使用。 */
     int16_t current_10ma;                       /* 业务电流，单位10mA；供现有保护阈值和方向判断使用，允许保留零死区/量化口径。 */
     uint8_t charging;                           /* 充电方向标志；当前由 current_10ma > 0 推导，不额外读取充电器状态位。 */
     uint8_t discharging;                        /* 放电方向标志；当前由 current_10ma < 0 推导。 */

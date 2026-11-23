@@ -1,6 +1,7 @@
 #include "boot_manage.h"
 
 #include "Boot/boot_app.h"
+#include "Boot/boot_can_upgrade.h"
 #include "Boot/boot_config.h"
 #include "Boot/boot_protocol.h"
 #include "Boot/boot_upgrade.h"
@@ -54,6 +55,15 @@ static void boot_manage_move_backup_then_jump(void)
         return;
     }
 
+    if (boot_upgrade_pending_move_is_valid())
+    {
+        /* APP2仍是已提交的有效镜像；保留CCCC，避免新包覆盖后失去重试机会。 */
+        (void)SEGGER_RTT_WriteString(0U,
+                                     "BOOT APP1 copy failed, keep CCCC for retry\r\n");
+        return;
+    }
+
+    /* 只有提交记录或APP2镜像本身无效时，才放弃CCCC进入救援接收态。 */
     boot_manage_enter_wait_package("BOOT APP2 invalid, wait package\r\n");
 }
 
@@ -71,6 +81,13 @@ void boot_manage_task(void)
     }
     if ((flag == BOOT_UPGRADE_FLAG_APP1_READY) &&
         (uds_reset_after_tx_pending() != 0U))
+    {
+        return;
+    }
+
+    /* CAN IAP已提交CCCC后先让E1/03响应发完，再由boot_can任务复位搬运。 */
+    if ((flag == BOOT_UPGRADE_FLAG_NEED_MOVE) &&
+        boot_can_upgrade_is_busy())
     {
         return;
     }

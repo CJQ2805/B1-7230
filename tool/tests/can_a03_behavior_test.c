@@ -21,6 +21,8 @@ static uint8_t soc_status = APP_BMS_SOC_WRITE_IDLE;
 static uint8_t requested_soc;
 static unsigned soc_request_count;
 static uint32_t balance_mask;
+static uint32_t timer_ms;
+app_h_power_manage_t gt_app_h_power_manage;
 #define CHECK(x) do { if (!(x)) { printf("FAIL %s:%u: %s\n", __func__, __LINE__, #x); failures++; return; } } while (0)
 
 bool d_can_send(d_can_t *c, uint32_t id, d_can_id_t kind, const uint8_t *d, uint8_t n)
@@ -34,6 +36,8 @@ bool d_can_send(d_can_t *c, uint32_t id, d_can_id_t kind, const uint8_t *d, uint
     return true;
 }
 bool d_can_is_tx_idle(d_can_t *c) { (void)c; return tx_idle; }
+bool d_can_is_bus_online(d_can_t *c) { (void)c; return true; }
+uint32_t d_timer_get_ms(void) { return timer_ms; }
 void d_can_set_iap_silence(bool enabled) { (void)enabled; }
 void app_bms_snapshot_read(app_bms_snapshot_t *s) { *s = sample; }
 void app_bms_fault_snapshot_read(struct _app_bms_fault_t *s) { *s = fault_sample; }
@@ -47,6 +51,7 @@ bool app_param_set_manufacture_sn(const uint8_t *d, uint8_t n)
 { memcpy(sn, d, n); sn[n] = 0; sn_length = n; return true; }
 bool app_param_clear_manufacture_sn(void) { sn[0] = 0; return true; }
 bool app_param_set_product_mode(uint8_t mode) { return mode <= APP_PARAM_PRODUCT_MODE_SHIPPING; }
+uint8_t app_param_get_product_mode(void) { return APP_PARAM_PRODUCT_MODE_SHIPPING; }
 uint16_t app_log_rtd_num(void) { return 2; }
 bool ducar_bms_pack_log_payload(uint16_t i, uint8_t d[60])
 { unsigned k; for (k=0;k<60;k++) d[k]=(uint8_t)(k+i); return true; }
@@ -100,6 +105,8 @@ static void fresh(void)
     version_v="V01"; version_t="T10"; ducar_can_protocol_init();
     cal2_fake_status=3U; cal2_fake_active=0U; cal2_fake_request_count=0U;
     cal2_fake_completion_pending=0U;
+    timer_ms=0U;
+    memset(&gt_app_h_power_manage,0,sizeof(gt_app_h_power_manage));
 }
 static void receive(uint32_t id, const uint8_t *d, uint8_t n)
 {
@@ -113,11 +120,44 @@ static void query(uint16_t pgn)
 }
 static void millisecond(void)
 {
+    timer_ms++;
     ducar_can_bus_timer_handle(); ducar_can_data_renew(); ducar_can_control_reply_task();
     if (ducar_can_detd_tx_window_is_active()) {
         ducar_can_50ms_task(); ducar_can_100ms_task(); ducar_can_200ms_task();
         ducar_can_500ms_task(); ducar_can_1000ms_task();
     }
+}
+static void test_runtime_bms_address(void)
+{
+    const uint8_t request[3] = {0x00, 0xF2, 0x00};
+    const uint8_t clear_fault[1] = {0x00};
+
+    fresh();
+    CHECK(g_ducar_can_bms_address == DUCAR_CAN_BMS_A_ADDRESS);
+    ducar_can_send_f216();
+    CHECK(frame_count == 1 && frames[0].u32id == 0x18F21616);
+
+    g_ducar_can_bms_address = 0x17U;
+    ducar_can_protocol_init();
+    frame_count = 0;
+    ducar_can_send_f216();
+    CHECK(frame_count == 1 && frames[0].u32id == 0x18F21617);
+
+    frame_count = 0;
+    receive(0x18EA163A, request, sizeof(request));
+    CHECK(frame_count == 0);
+    receive(0x18EA173A, request, sizeof(request));
+    CHECK(frame_count == 1 && frames[0].u32id == 0x18F20017);
+    frame_count = 0;
+    receive(0x18EAFF3A, request, sizeof(request));
+    CHECK(frame_count == 1 && frames[0].u32id == 0x18F20017);
+
+    frame_count = 0;
+    receive(0x18E6173A, clear_fault, sizeof(clear_fault));
+    ducar_can_control_reply_task();
+    CHECK(frame_count == 1 && frames[0].u32id == 0x18E83A17);
+    CHECK(frames[0].au8data[0] == DUCAR_CAN_ACK);
+    g_ducar_can_bms_address = DUCAR_CAN_BMS_A_ADDRESS;
 }
 static void test_version_layout(void)
 {
@@ -571,6 +611,12 @@ static void test_cal2_wire_contract(void)
 }
 int main(int argc, char **argv)
 {
+    if ((argc == 2) && (strcmp(argv[1], "address") == 0))
+    {
+        test_runtime_bms_address();
+        printf("CAN runtime address: %s (%u failures)\n", failures ? "FAIL" : "PASS", failures);
+        return failures ? 1 : 0;
+    }
     /* Focused protocol check while older A0.7 fixtures are being updated. */
     if ((argc == 2) && (strcmp(argv[1], "f21f") == 0))
     {

@@ -84,6 +84,8 @@ static d_system_reset_flags_t s_log_reset_flags;      /* 启动早期捕获的�
 static uint8_t s_log_reset_flags_pending;             /* 尚未成功保存的本次启动复位来源。 */
 static uint8_t s_log_reset_flags_captured;             /* 标记硬件复位标志是否已在main早期读取并清除。 */
 static SemaphoreHandle_t s_log_mutex;                /* 串行化跨任务LOG入队、写入和flush状态读取。 */
+static volatile app_log_clear_status_t s_log_clear_status; /* 清除命令状态，供CAN任务无阻塞查询。 */
+static uint16_t s_log_clear_page_index;                /* 分页擦除进度，每个日志周期最多擦一页。 */
 
 static const char *app_log_trigger_name(uint8_t trigger);
 
@@ -732,6 +734,8 @@ void app_log_init(void)
     s_log_pending_tail = 0U;          /* RAM队列读取位置从0开始。 */
     s_log_pending_count = 0U;         /* 初始化时队列为空。 */
     s_log_overflow_count = 0U;        /* 初始化时还没有发生队列溢出。 */
+    s_log_clear_status = APP_LOG_CLEAR_IDLE;
+    s_log_clear_page_index = 0U;
     s_log_ntc_diag_inited = 0U;
     s_log_last_ntc_fault_mask = 0U;
     s_log_last_ntc_count = 0U;
@@ -756,9 +760,13 @@ void app_log_init(void)
     }
 }
 
-/* 10ms任务入口：输出采样诊断，再最多写一条等待中的快照。 */
+/* 10ms任务入口：优先执行清除请求，否则输出采样诊断并最多写一条快照。 */
 void app_log_task(void)
 {
+    m_flash_wl_status_t eFormatStatus;
+    bool bClearRequested;
+    bool bFormatComplete = false;
+
     if (!app_log_lock(portMAX_DELAY))
     {
         return;
@@ -768,6 +776,51 @@ void app_log_task(void)
     {
         app_log_unlock();
         return; /* 直接退出，不做状态检查和写Flash。 */
+    }
+
+    bClearRequested = (s_log_clear_status == APP_LOG_CLEAR_PENDING);
+    if (bClearRequested)
+    {
+        app_log_unlock(); /* 清队列已在请求时完成，擦除期间允许新故障快照继续入队。 */
+        eFormatStatus = m_flash_wl_format_step(&s_log_rtd_area,
+                                               &s_log_rtd_cfg,
+                                               s_log_clear_page_index,
+                                               &bFormatComplete);
+
+        if (!app_log_lock(portMAX_DELAY))
+        {
+            s_log_ready = 0U;
+            s_log_clear_status = APP_LOG_CLEAR_FAILED;
+            return;
+        }
+
+        if (s_log_clear_status == APP_LOG_CLEAR_PENDING)
+        {
+            if ((eFormatStatus == M_FLASH_WL_OK) && bFormatComplete)
+            {
+                s_log_clear_status = APP_LOG_CLEAR_SUCCESS;
+                SEGGER_RTT_printf(0, "LOG_CLEAR_COMPLETE records=0\r\n");
+            }
+            else if (eFormatStatus == M_FLASH_WL_OK)
+            {
+                s_log_clear_page_index++;
+            }
+            else if (eFormatStatus == M_FLASH_WL_ERR_BUSY)
+            {
+                /* Flash正被其他存储操作占用；保留进度并在下一日志周期重试。 */
+            }
+            else
+            {
+                s_log_ready = 0U;
+                s_log_clear_status = APP_LOG_CLEAR_FAILED;
+                SEGGER_RTT_printf(0,
+                                  "LOG_CLEAR_FAILED status=%u\r\n",
+                                  (unsigned int)eFormatStatus);
+            }
+        }
+
+        app_log_unlock();
+        return;
     }
 
     app_log_check_ntc_diagnostics(); /* 输出NTC原始故障掩码变化，便于辨认异常通道。 */
@@ -803,9 +856,55 @@ bool app_log_request_snapshot(log_trigger_t trigger)
     return true;
 }
 
+/* 清除请求只更新RAM状态；完整Flash格式化在SaveLog_Task中执行。 */
+bool app_log_clear_request(void)
+{
+    if (!app_log_lock(pdMS_TO_TICKS(100U)))
+    {
+        return false;
+    }
+
+    if ((s_log_ready == 0U) || (s_log_clear_status != APP_LOG_CLEAR_IDLE))
+    {
+        app_log_unlock();
+        return false;
+    }
+
+    /* 丢弃清除命令前尚未写入Flash的快照，避免擦除后旧快照重新出现。 */
+    s_log_pending_head = 0U;
+    s_log_pending_tail = 0U;
+    s_log_pending_count = 0U;
+    s_log_overflow_count = 0U;
+    s_log_reset_flags_pending = 0U;
+    s_log_clear_page_index = 0U;
+    s_log_clear_status = APP_LOG_CLEAR_PENDING;
+    app_log_unlock();
+    return true;
+}
+
+app_log_clear_status_t app_log_clear_get_status(void)
+{
+    return s_log_clear_status;
+}
+
+/* CAN ACK/NAK已进入发送队列后，释放本次清除事务状态。 */
+void app_log_clear_complete(void)
+{
+    if ((s_log_clear_status == APP_LOG_CLEAR_SUCCESS) ||
+        (s_log_clear_status == APP_LOG_CLEAR_FAILED))
+    {
+        s_log_clear_status = APP_LOG_CLEAR_IDLE;
+    }
+}
+
 app_log_flush_status_t app_log_get_flush_status(void)
 {
     app_log_flush_status_t status;
+
+    if (s_log_clear_status == APP_LOG_CLEAR_PENDING)
+    {
+        return APP_LOG_FLUSH_PENDING;
+    }
 
     /* 此接口在BMS实时任务里调用，不等待正在进行的Flash写操作。 */
     if (!app_log_lock(0U))
@@ -814,6 +913,14 @@ app_log_flush_status_t app_log_get_flush_status(void)
     }
 
     if (s_log_ready == 0U)
+    {
+        status = APP_LOG_FLUSH_FAILED;
+    }
+    else if (s_log_clear_status == APP_LOG_CLEAR_PENDING)
+    {
+        status = APP_LOG_FLUSH_PENDING;
+    }
+    else if (s_log_clear_status == APP_LOG_CLEAR_FAILED)
     {
         status = APP_LOG_FLUSH_FAILED;
     }
@@ -831,7 +938,7 @@ uint16_t app_log_rtd_num(void)
 {
     m_flash_wl_info_t tFlashAreaInfo; /* 临时保存底层均衡擦写分区状态。 */
 
-    if (s_log_ready == 0U) /* LOG分区初始化失败时不能导出。 */
+    if ((s_log_ready == 0U) || (s_log_clear_status == APP_LOG_CLEAR_PENDING)) /* 清除中或LOG分区不可用时不能导出。 */
     {
         return 0U; /* 对外显示没有可读记录。 */
     }
@@ -854,7 +961,7 @@ bool app_log_rtd_read(log_rtd_t *buffer, uint16_t index)
 {
     uint16_t u16ReadLength; /* 底层读出的业务数据长度。 */
 
-    if ((s_log_ready == 0U) || (buffer == NULL)) /* LOG不可用或输出指针为空。 */
+    if ((s_log_ready == 0U) || (s_log_clear_status == APP_LOG_CLEAR_PENDING) || (buffer == NULL)) /* 清除中、LOG不可用或输出指针为空。 */
     {
         return false; /* 读取失败。 */
     }

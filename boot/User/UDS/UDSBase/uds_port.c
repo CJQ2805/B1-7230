@@ -21,6 +21,7 @@ void uds_recv_frame(uint32_t id, uint8_t *frame_buf, uint8_t frame_dlc)
     }
 }
 
+/* UDS发送ID：0x7A8标准帧；response_id必须等于RESPONSE_ID。 */
 int uds_send_frame(uint32_t response_id, uint8_t *frame_buf, uint8_t frame_dlc)
 {
     ducar_can_frame_t frame;

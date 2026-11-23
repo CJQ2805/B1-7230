@@ -10,6 +10,8 @@
 #define UDS_UPGRADE_ROUTINE_STATUS_FAIL  0x05U
 
 void uds_upgrade_reset_state(void);
+/* True while the UDS customer flow owns or is committing an APP1 image. */
+bool_t uds_upgrade_app1_is_busy(void);
 uint8_t uds_upgrade_store_fingerprint(const uint8_t *data, uint16_t length);
 uint8_t uds_upgrade_request_download(uint32_t target_address, uint32_t download_size);
 uint8_t uds_upgrade_transfer_data(uint8_t block_counter, const uint8_t *data, uint16_t data_len);

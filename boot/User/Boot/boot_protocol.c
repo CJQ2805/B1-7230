@@ -1,6 +1,7 @@
 #include "boot_protocol.h"
 
 #include "Boot/boot_app.h"
+#include "Boot/boot_can_upgrade.h"
 #include "Boot/boot_config.h"
 #include "Boot/boot_upgrade.h"
 #include "Hal_Driver/boot_flash.h"
@@ -8,9 +9,13 @@
 #include "Hal_Driver/boot_uart.h"
 #include "Hal_Driver/boot_watchdog.h"
 #include "Protocol/ducar_iap_protocol.h"
+#include "UDS/UDSLogic/uds_upgrade.h"
 #include "SEGGER_RTT.h"
 #include "n32g45x.h"
 #include <string.h>
+
+#define BOOT_PROTOCOL_SESSION_TIMEOUT_MS ((uint32_t)30000UL)
+#define BOOT_PROTOCOL_FRAME_TIMEOUT_MS   ((uint32_t)1000UL)
 
 typedef enum
 {
@@ -28,6 +33,8 @@ static uint16_t s_boot_protocol_expected_frame;                 /* 下一帧期�
 static uint16_t s_boot_protocol_total_data_frames;              /* 固件真实数据需要的Program帧数，不含第0帧。 */
 static uint8_t s_boot_protocol_backup_ready;                    /* APP2备份固件是否已通过校验。 */
 static uint8_t s_boot_protocol_tx_frame[DUCAR_IAP_MAX_FRAME_LEN];  /* 应答帧发送缓冲。 */
+static uint32_t s_boot_protocol_last_activity_ms;                 /* 最近完成的完整UART协议帧时间。 */
+static uint32_t s_boot_protocol_last_byte_ms;                      /* 最近UART字节时间，用于丢弃残帧。 */
 
 static bool boot_protocol_update_info_is_valid(const ducar_iap_update_info_t *info)
 {
@@ -61,6 +68,12 @@ static void boot_protocol_reset_update_state(void)
     s_boot_protocol_backup_ready = 0U;
     memset(&s_boot_protocol_update_info, 0, sizeof(s_boot_protocol_update_info));
     memset(&s_boot_protocol_fw_info, 0, sizeof(s_boot_protocol_fw_info));
+}
+
+/* UART升级期间APP2被占用，FINISHED状态也要等JUMP或会话超时。 */
+bool boot_protocol_is_busy(void)
+{
+    return (s_boot_protocol_state != BOOT_PROTOCOL_STATE_IDLE);
 }
 
 static bool boot_protocol_erase_app2(void)
@@ -122,20 +135,21 @@ static bool boot_protocol_move_backup_to_app1(void)
     return (boot_protocol_app1_crc_is_valid() && boot_upgrade_set_flag(BOOT_UPGRADE_FLAG_APP_VALID));
 }
 
-static void boot_protocol_send_frame(uint8_t cmd, const uint8_t *data, uint8_t len)
+static bool boot_protocol_send_frame(uint8_t cmd, const uint8_t *data, uint8_t len)
 {
     uint16_t frame_len;
 
     frame_len = ducar_iap_pack_frame(cmd, data, len, s_boot_protocol_tx_frame, (uint16_t)sizeof(s_boot_protocol_tx_frame));
     if (frame_len > 0U)
     {
-        boot_uart_send_buffer(s_boot_protocol_tx_frame, frame_len);
+        return boot_uart_send_buffer(s_boot_protocol_tx_frame, frame_len);
     }
+    return false;
 }
 
-static void boot_protocol_send_status(uint8_t cmd, uint8_t status)
+static bool boot_protocol_send_status(uint8_t cmd, uint8_t status)
 {
-    boot_protocol_send_frame(cmd, &status, 1U);
+    return boot_protocol_send_frame(cmd, &status, 1U);
 }
 
 static void boot_protocol_finish_receive(void)
@@ -147,8 +161,10 @@ static void boot_protocol_finish_receive(void)
      * 最后一包已经写入APP2并完成CRC校验，先回复PROGRAM ACK，避免上位机误判最后一包失败。
      * ACK发送完成后进入FINISHED状态，等待上位机JUMP命令触发APP2到APP1的搬运。
      */
-    boot_protocol_send_status(DUCAR_IAP_CMD_PROGRAM, DUCAR_IAP_ACK);
-    boot_uart_wait_tx_complete();
+    if (boot_protocol_send_status(DUCAR_IAP_CMD_PROGRAM, DUCAR_IAP_ACK))
+    {
+        (void)boot_uart_wait_tx_complete();
+    }
 }
 
 static void boot_protocol_move_and_jump_app1(void)
@@ -156,8 +172,17 @@ static void boot_protocol_move_and_jump_app1(void)
     (void)SEGGER_RTT_WriteString(0U, "BOOT move APP2 to APP1\r\n");
     if (!boot_protocol_move_backup_to_app1())
     {
-        (void)boot_upgrade_set_flag(BOOT_UPGRADE_FLAG_WAIT_PACKAGE);
-        boot_protocol_reset_update_state();
+        if (!boot_upgrade_pending_move_is_valid())
+        {
+            (void)boot_upgrade_set_flag(BOOT_UPGRADE_FLAG_WAIT_PACKAGE);
+            boot_protocol_reset_update_state();
+        }
+        else
+        {
+            /* APP2有效且CCCC已提交；留给启动管理器重试，不能退回BBBB。 */
+            (void)SEGGER_RTT_WriteString(0U,
+                                         "BOOT UART copy failed, keep CCCC\r\n");
+        }
         return;
     }
 
@@ -195,6 +220,15 @@ static void boot_protocol_handle_update_start(const ducar_iap_frame_t *frame)
     {
         boot_protocol_send_status(DUCAR_IAP_CMD_UPDATE_START, DUCAR_IAP_NAK);
         boot_protocol_reset_update_state();
+        return;
+    }
+
+    /* APP2与CAN IAP共用；同时避免BOOT直接写APP1的UDS流程被搬运打断。 */
+    if (boot_can_upgrade_is_busy() ||
+        uds_upgrade_app1_is_busy() ||
+        (boot_upgrade_get_flag() == BOOT_UPGRADE_FLAG_NEED_MOVE))
+    {
+        (void)boot_protocol_send_status(DUCAR_IAP_CMD_UPDATE_START, DUCAR_IAP_NAK);
         return;
     }
 
@@ -325,8 +359,12 @@ static void boot_protocol_handle_jump(void)
         return;
     }
 
-    boot_protocol_send_status(DUCAR_IAP_CMD_JUMP, DUCAR_IAP_ACK);
-    boot_uart_wait_tx_complete();
+    if (!boot_protocol_send_status(DUCAR_IAP_CMD_JUMP, DUCAR_IAP_ACK) ||
+        !boot_uart_wait_tx_complete())
+    {
+        /* ACK未确认发完时不擦写APP1；保留FINISHED等待上位机重发JUMP。 */
+        return;
+    }
     boot_timer_delay_ms(2UL);
     boot_protocol_move_and_jump_app1();
 }
@@ -364,6 +402,8 @@ void boot_protocol_init(void)
 {
     ducar_iap_parser_init(&s_boot_protocol_parser);
     boot_protocol_reset_update_state();
+    s_boot_protocol_last_activity_ms = boot_timer_get_ms();
+    s_boot_protocol_last_byte_ms = s_boot_protocol_last_activity_ms;
 }
 
 void boot_protocol_task(void)
@@ -371,13 +411,34 @@ void boot_protocol_task(void)
     uint8_t byte;
     ducar_iap_frame_t frame;
     ducar_iap_parse_result_t parse_result;
+    uint32_t u32NowMs;
+
+    u32NowMs = boot_timer_get_ms();
+    if (boot_protocol_is_busy() &&
+        ((uint32_t)(u32NowMs - s_boot_protocol_last_activity_ms) >=
+         BOOT_PROTOCOL_SESSION_TIMEOUT_MS))
+    {
+        /* 未完成的接收会话超时只释放状态；未提交的APP2可由下次升级重写。 */
+        ducar_iap_parser_init(&s_boot_protocol_parser);
+        boot_protocol_reset_update_state();
+        return;
+    }
+    if ((s_boot_protocol_parser.state != 0U) &&
+        ((uint32_t)(u32NowMs - s_boot_protocol_last_byte_ms) >=
+         BOOT_PROTOCOL_FRAME_TIMEOUT_MS))
+    {
+        /* 半帧不应跨越长静默期拼接到下一条命令。 */
+        ducar_iap_parser_init(&s_boot_protocol_parser);
+    }
 
     while (boot_uart_read_byte(&byte))
     {
         boot_watchdog_feed();
+        s_boot_protocol_last_byte_ms = boot_timer_get_ms();
         parse_result = ducar_iap_parser_input(&s_boot_protocol_parser, byte, &frame);
         if (parse_result == DUCAR_IAP_PARSE_OK)
         {
+            s_boot_protocol_last_activity_ms = boot_timer_get_ms();
             boot_protocol_handle_frame(&frame);
         }
         else if (parse_result == DUCAR_IAP_PARSE_ERROR)

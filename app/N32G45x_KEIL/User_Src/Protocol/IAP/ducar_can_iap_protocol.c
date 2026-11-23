@@ -19,11 +19,13 @@
 #include "Driver/d_watchdog.h"
 #include "Protocol/Comm/ducar_can_protocol.h"
 #include "Protocol/IAP/ducar_uart_iap_protocol.h"
+#include "Protocol/UDS/UDSLogic/uds_upgrade.h"
 #include "Task/bms_task.h"
 
 #define DUCAR_CAN_IAP_DATA_DLC                 ((uint8_t)8U)
 /* Upgrade session expires after ten seconds without a valid IAP frame. */
 #define DUCAR_CAN_IAP_TIMEOUT_MS              ((uint32_t)10000UL)
+#define DUCAR_CAN_IAP_PAGE_TIMEOUT_MS         ((uint32_t)500UL)
 #define DUCAR_CAN_IAP_TX_RETRY_TICKS          ((uint8_t)20U)
 #define DUCAR_CAN_IAP_TP_RTS                  ((uint8_t)0x10U)
 #define DUCAR_CAN_IAP_TP_CTS                  ((uint8_t)0x11U)
@@ -66,6 +68,9 @@ static uint8_t u8CanIapPagePackets;
 static uint8_t u8CanIapExpectedPacket;
 static uint8_t u8CanIapHostAddress;
 static uint32_t u32CanIapLastActivityMs;
+static uint8_t u8CanIapLastPageValid;
+static uint32_t u32CanIapLastPageAddress;
+static uint8_t au8CanIapLastPageBuffer[DUCAR_CAN_IAP_PAGE_MESSAGE_LEN];
 static uint8_t u8CanIapTxRetryTicks;
 static uint8_t u8CanIapMoveAfterTx;
 static t_can_packet tCanIapTxPacket;
@@ -173,6 +178,20 @@ static void ducar_can_iap_reset_transfer_state(void)
     u32CanIapLastActivityMs = 0UL;
     /* 页缓存恢复为FF，便于最后一页补齐。 */
     memset(au8CanIapPageBuffer, 0xFF, sizeof(au8CanIapPageBuffer));
+    /* 新会话没有任何已提交页，不能把旧会话的重复页当作当前升级确认。 */
+    u8CanIapLastPageValid = 0U;
+    u32CanIapLastPageAddress = 0UL;
+    memset(au8CanIapLastPageBuffer, 0xFF, sizeof(au8CanIapLastPageBuffer));
+}
+
+/* 丢弃当前未完成页，但保留升级会话和已提交的包进度，等待主机重新RTS。 */
+static void ducar_can_iap_discard_page(void)
+{
+    eCanIapState = DUCAR_CAN_IAP_STATE_WAIT_PAGE;
+    u16CanIapPageLength = 0U;
+    u8CanIapPagePackets = 0U;
+    u8CanIapExpectedPacket = 0U;
+    memset(au8CanIapPageBuffer, 0xFF, sizeof(au8CanIapPageBuffer));
 }
 
 /* 清除APP侧待发送的ACK/CTS/EOM/ABORT及其发送后动作状态。 */
@@ -188,7 +207,7 @@ static void ducar_can_iap_clear_tx_state(void)
     memset(&tCanIapTxPacket, 0, sizeof(tCanIapTxPacket));
 }
 
-/* 将一帧IAP应答放入单帧发送状态机，实际写CAN邮箱由周期任务执行。 */
+/* 发送ID：0x18[PF][目标地址][BMS地址]，PF由调用方指定；入队后由周期任务发送。 */
 static bool ducar_can_iap_queue_tx(uint8_t u8Pf,
                                    uint8_t u8Destination,
                                    const uint8_t *pu8Data,
@@ -209,7 +228,7 @@ static bool ducar_can_iap_queue_tx(uint8_t u8Pf,
     /* 按PF、目标地址和BMS源地址生成应答ID。 */
     tCanIapTxPacket.u32id = ducar_can_iap_build_id(u8Pf,
                                                    u8Destination,
-                                                   DUCAR_CAN_BMS_A_ADDRESS);
+                                                   g_ducar_can_bms_address);
     /* IAP协议固定使用29位扩展帧。 */
     tCanIapTxPacket.u32idType = D_CAN_ID_EXTENDED;
     /* 所有IAP控制应答固定使用8字节数据区。 */
@@ -225,7 +244,7 @@ static bool ducar_can_iap_queue_tx(uint8_t u8Pf,
     return true;
 }
 
-/* 组装E1/01、E1/02、E1/03对应的ACK/NAK应答。 */
+/* 发送ID：0x18E8[目标地址][BMS地址]，默认0x18E83A16；E1的ACK/NAK。 */
 static bool ducar_can_iap_queue_e1_response(uint8_t u8Status,
                                             uint8_t u8Destination)
 {
@@ -248,7 +267,7 @@ static bool ducar_can_iap_queue_e1_response(uint8_t u8Status,
                                   0U);
 }
 
-/* 对一页DF00数据回复CTS，告知主机本页允许发送的DT数量和起始序号。 */
+/* 发送ID：0x18EC[目标地址][BMS地址]，默认0x18EC3A16；DF00页CTS。 */
 static bool ducar_can_iap_queue_cts(void)
 {
     uint8_t au8CanData[DUCAR_CAN_IAP_DATA_DLC];
@@ -272,7 +291,7 @@ static bool ducar_can_iap_queue_cts(void)
                                   0U);
 }
 
-/* 对一页数据回复EOM；整包校验通过时同时登记发送完成后的BOOT搬运动作。 */
+/* 发送ID：0x18EC[目标地址][BMS地址]，默认0x18EC3A16；页EOM及后续搬运登记。 */
 static bool ducar_can_iap_queue_eom(uint8_t u8MoveAfterTx)
 {
     uint8_t au8CanData[DUCAR_CAN_IAP_DATA_DLC];
@@ -297,7 +316,7 @@ static bool ducar_can_iap_queue_eom(uint8_t u8MoveAfterTx)
                                   u8MoveAfterTx);
 }
 
-/* 当前页格式、页序或Flash处理失败时，向主机发送TP ABORT并结束会话。 */
+/* 发送ID：0x18EC[目标地址][BMS地址]，默认0x18EC3A16；异常时发送TP ABORT。 */
 static bool ducar_can_iap_queue_abort(void)
 {
     uint8_t au8CanData[DUCAR_CAN_IAP_DATA_DLC];
@@ -340,7 +359,7 @@ static bool ducar_can_iap_is_pc_to_bms(const t_can_packet *ptCanPacket)
     /* 同时检查指针、源地址和目标地址。 */
     return ((ptCanPacket != 0) &&
             (ducar_can_iap_get_sa(ptCanPacket) == DUCAR_CAN_PC_ADDRESS) &&
-            (ducar_can_iap_get_ps(ptCanPacket) == DUCAR_CAN_BMS_A_ADDRESS));
+            (ducar_can_iap_get_ps(ptCanPacket) == g_ducar_can_bms_address));
 }
 
 /* 校验E1/02长度和APP代码区容量，拒绝零长度、越界长度。 */
@@ -563,6 +582,22 @@ static bool ducar_can_iap_complete_image_is_valid(void)
 static void ducar_can_iap_complete_page(void)
 {
     uint8_t u8MoveAfterEom;
+    uint32_t u32PageAddress;
+
+    u32PageAddress = ducar_can_iap_read_u32_le(au8CanIapPageBuffer);
+    if ((u8CanIapLastPageValid != 0U) &&
+        (u32PageAddress == u32CanIapLastPageAddress) &&
+        (memcmp(au8CanIapPageBuffer,
+                au8CanIapLastPageBuffer,
+                sizeof(au8CanIapPageBuffer)) == 0))
+    {
+        /* 上一页内容完全相同，表示主机可能没收到EOM；重发EOM但不重复写Flash/推进进度。 */
+        if (ducar_can_iap_queue_eom(0U))
+        {
+            eCanIapState = DUCAR_CAN_IAP_STATE_WAIT_PAGE;
+        }
+        return;
+    }
 
     /* 先把当前132字节页写入APP2或完成首页头解析。 */
     if (!ducar_can_iap_write_completed_page())
@@ -573,13 +608,19 @@ static void ducar_can_iap_complete_page(void)
         return;
     }
 
+    /* 记录最后成功提交的页，供丢失EOM后的逐字节重复页校验。 */
+    u32CanIapLastPageAddress = u32PageAddress;
+    memcpy(au8CanIapLastPageBuffer,
+           au8CanIapPageBuffer,
+           sizeof(au8CanIapLastPageBuffer));
+    u8CanIapLastPageValid = 1U;
+
     /* 每页都回复EOM；只有当前已是完整合法镜像时才设置搬运标志。 */
     u8MoveAfterEom = ducar_can_iap_complete_image_is_valid() ? 1U : 0U;
     if (!ducar_can_iap_queue_eom(u8MoveAfterEom))
     {
-        /* EOM无法排队时终止会话，避免主机误以为本页已确认。 */
-        (void)ducar_can_iap_queue_abort();
-        ducar_can_iap_reset_transfer_state();
+        /* 本页已安全写入；保留进度和页缓存，主机重发RTS后可幂等补回EOM。 */
+        eCanIapState = DUCAR_CAN_IAP_STATE_WAIT_PAGE;
         return;
     }
 
@@ -628,6 +669,16 @@ static void ducar_can_iap_receive_e1(const t_can_packet *ptCanPacket)
         /* Data1~Data4是主机声明的整个固件长度。 */
         u32FirmwareSize = ducar_can_iap_read_u32_le(&ptCanPacket->au8data[1]);
         if (!ducar_can_iap_firmware_size_is_valid(u32FirmwareSize))
+        {
+            (void)ducar_can_iap_queue_e1_response(DUCAR_CAN_NAK,
+                                                   ducar_can_iap_get_sa(ptCanPacket));
+            return;
+        }
+
+        /* APP2由UART IAP、CAN IAP和UDS共享；CCCC提交后也不能覆盖已验收镜像。 */
+        if (ducar_iap_is_busy() ||
+            uds_upgrade_app2_is_busy() ||
+            ducar_iap_is_boot_move_pending())
         {
             (void)ducar_can_iap_queue_e1_response(DUCAR_CAN_NAK,
                                                    ducar_can_iap_get_sa(ptCanPacket));
@@ -703,11 +754,9 @@ static void ducar_can_iap_receive_rts(const t_can_packet *ptCanPacket)
         return;
     }
 
-    /* 已有应答待发时保留该应答，避免重复RTS覆盖尚未发送的CTS。 */
-    if ((eCanIapState == DUCAR_CAN_IAP_STATE_RECEIVING_PAGE) &&
-        (eCanIapTxState != DUCAR_CAN_IAP_TX_IDLE))
+    /* 等上一条CTS/EOM真正提交后再接受新RTS，避免新回复覆盖旧回复。 */
+    if (eCanIapTxState != DUCAR_CAN_IAP_TX_IDLE)
     {
-        u32CanIapLastActivityMs = d_timer_get_ms();
         return;
     }
 
@@ -748,8 +797,9 @@ static void ducar_can_iap_receive_dt(const t_can_packet *ptCanPacket)
     /* Data0必须等于当前期待的连续DT序号。 */
     if (ptCanPacket->au8data[0] != u8CanIapExpectedPacket)
     {
-        (void)ducar_can_iap_queue_abort();
-        ducar_can_iap_reset_transfer_state();
+        /* 当前页失序不应清除此前已确认页；丢弃本页并等主机从RTS重发。 */
+        u32CanIapLastActivityMs = d_timer_get_ms();
+        ducar_can_iap_discard_page();
         return;
     }
 
@@ -758,8 +808,8 @@ static void ducar_can_iap_receive_dt(const t_can_packet *ptCanPacket)
     /* 偏移不能越过当前页有效长度。 */
     if (u16PageBufferOffset >= u16CanIapPageLength)
     {
-        (void)ducar_can_iap_queue_abort();
-        ducar_can_iap_reset_transfer_state();
+        u32CanIapLastActivityMs = d_timer_get_ms();
+        ducar_can_iap_discard_page();
         return;
     }
     /* 计算当前序号之后还需接收多少页数据。 */
@@ -769,8 +819,8 @@ static void ducar_can_iap_receive_dt(const t_can_packet *ptCanPacket)
     /* 实际DLC必须覆盖序号字节加需要拷贝的数据。 */
     if (ptCanPacket->u8len < (uint8_t)(u8PageCopyLength + 1U))
     {
-        (void)ducar_can_iap_queue_abort();
-        ducar_can_iap_reset_transfer_state();
+        u32CanIapLastActivityMs = d_timer_get_ms();
+        ducar_can_iap_discard_page();
         return;
     }
 
@@ -835,9 +885,10 @@ bool ducar_can_iap_protocol_is_packet(const t_can_packet *ptCanPacket)
         return true;
     }
 
-    /* DT只允许在当前页已经由RTS建立后接收，并且至少包含序号字节。 */
+    /* 活动升级期间也拦截WAIT_PAGE里的迟到DT，避免它落入普通TP/UDS解析。 */
     return ((u8Pf == DUCAR_CAN_PF_TP_DT) &&
-            (eCanIapState == DUCAR_CAN_IAP_STATE_RECEIVING_PAGE) &&
+            ((eCanIapState == DUCAR_CAN_IAP_STATE_WAIT_PAGE) ||
+             (eCanIapState == DUCAR_CAN_IAP_STATE_RECEIVING_PAGE)) &&
             (ptCanPacket->u8len >= 2U) &&
             ducar_can_iap_is_pc_to_bms(ptCanPacket));
 }
@@ -880,8 +931,18 @@ void ducar_can_iap_protocol_task(void)
     /* 使用系统毫秒时基，统一处理接收超时、发送重试和发送完成等待。 */
     u32CurrentTimeMs = d_timer_get_ms();
 
+    if ((eCanIapTxState == DUCAR_CAN_IAP_TX_IDLE) &&
+        (eCanIapState == DUCAR_CAN_IAP_STATE_RECEIVING_PAGE) &&
+        ((uint32_t)(u32CurrentTimeMs - u32CanIapLastActivityMs) >=
+         DUCAR_CAN_IAP_PAGE_TIMEOUT_MS))
+    {
+        /* 当前页超时只丢弃页缓存，保留整包进度并等待主机重新发RTS。 */
+        ducar_can_iap_discard_page();
+    }
+
     /* 只有等待页或正在收页时才需要检查接收超时。 */
-    if (((eCanIapState == DUCAR_CAN_IAP_STATE_WAIT_PAGE) ||
+    if ((eCanIapTxState == DUCAR_CAN_IAP_TX_IDLE) &&
+        ((eCanIapState == DUCAR_CAN_IAP_STATE_WAIT_PAGE) ||
          (eCanIapState == DUCAR_CAN_IAP_STATE_RECEIVING_PAGE)) &&
         ((uint32_t)(u32CurrentTimeMs - u32CanIapLastActivityMs) >=
          DUCAR_CAN_IAP_TIMEOUT_MS))
@@ -896,6 +957,7 @@ void ducar_can_iap_protocol_task(void)
         ducar_can_iap_reset_transfer_state();
     }
 
+    /* 待发送ID在tCanIapTxPacket.u32id中，由入队时的PF、目标和BMS地址组成。 */
     /* TX_PENDING表示报文已经准备好，但还没有成功提交给CAN发送邮箱。 */
     if (eCanIapTxState == DUCAR_CAN_IAP_TX_PENDING)
     {
@@ -905,6 +967,9 @@ void ducar_can_iap_protocol_task(void)
                            tCanIapTxPacket.au8data,
                            tCanIapTxPacket.u8len))
         {
+            /* 控制应答提交成功后再起算等待主机下一步的超时。 */
+            u32CanIapLastActivityMs = u32CurrentTimeMs;
+
             /* 报文成功提交后，检查是否需要在EOM发送后进入BOOT搬运。 */
             if (u8CanIapMoveAfterTx != 0U)
             {

@@ -92,7 +92,7 @@ void d_can_set_iap_silence(bool enabled);
 
 /* 查询3个硬件发送邮箱是否全部空闲。 */
 bool d_can_is_tx_idle(d_can_t *can);
-/* 近期发送成功或收到总线帧时在线；连续发送失败后抑制周期报文。 */
+/* 连续发送失败后抑制周期报文；收到总线帧、发送成功或ABOM恢复后重新置在线。 */
 bool d_can_is_bus_online(d_can_t *can);
 /* 每个通信任务周期调用，清理完成状态并超时取消长期未完成的发送。 */
 void d_can_service_tx(void);

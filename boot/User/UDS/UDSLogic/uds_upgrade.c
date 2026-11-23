@@ -3,7 +3,9 @@
 #include <string.h>
 
 #include "Boot/boot_app.h"
+#include "Boot/boot_can_upgrade.h"
 #include "Boot/boot_config.h"
+#include "Boot/boot_protocol.h"
 #include "Boot/boot_upgrade.h"
 #include "Hal_Driver/boot_crc.h"
 #include "Hal_Driver/boot_flash.h"
@@ -77,6 +79,24 @@ void uds_upgrade_reset_state(void)
     s_driver_received = 0U;
     s_fingerprint_written = 0U;
     boot_uds_upgrade_clear_transfer();
+}
+
+/* UDS APP1传输期间，拒绝CAN/UART IAP的APP2提交和后续搬运。 */
+bool_t uds_upgrade_app1_is_busy(void)
+{
+    return ((s_state == BOOT_UDS_UPGRADE_APP_ERASED) ||
+            (s_state == BOOT_UDS_UPGRADE_APP_RX) ||
+            (s_state == BOOT_UDS_UPGRADE_APP_EXITED) ||
+            (s_state == BOOT_UDS_UPGRADE_APP_OK) ||
+            (s_state == BOOT_UDS_UPGRADE_DEPENDENCIES_OK) ||
+            (s_state == BOOT_UDS_UPGRADE_APP1_READY)) ? TRUE : FALSE;
+}
+
+static bool boot_uds_can_write_app1(void)
+{
+    return (!boot_protocol_is_busy() &&
+            !boot_can_upgrade_is_busy() &&
+            (boot_upgrade_get_flag() != BOOT_UPGRADE_FLAG_NEED_MOVE));
 }
 
 uint8_t uds_upgrade_store_fingerprint(const uint8_t *data, uint16_t length)
@@ -258,6 +278,10 @@ uint8_t uds_upgrade_transfer_data(uint8_t block_counter,
     }
     else if (s_transfer_type == BOOT_UDS_TRANSFER_APP)
     {
+        if (!boot_uds_can_write_app1())
+        {
+            return (uint8_t)NRC_CONDITIONS_NOT_CORRECT;
+        }
         destination = BOOT_APP1_START_ADDR + s_received_size;
         if ((destination < BOOT_APP1_START_ADDR) ||
             (destination >= BOOT_APP1_END_ADDR) ||
@@ -391,6 +415,11 @@ uint8_t uds_upgrade_erase_application(uint32_t target_address,
     if (s_state == BOOT_UDS_UPGRADE_APP_ERASED)
     {
         return UDS_UPGRADE_OK;
+    }
+
+    if (!boot_uds_can_write_app1())
+    {
+        return (uint8_t)NRC_CONDITIONS_NOT_CORRECT;
     }
 
     first_page = BOOT_APP1_START_ADDR;

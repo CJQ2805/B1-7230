@@ -42,6 +42,7 @@ static volatile uint8_t s_app_soc_write_target;
 static uint8_t s_bms_shutdown_trigger_logged;
 static uint8_t s_soc_transition_retry_wait;
 static uint32_t s_soc_transition_retry_start_ms;
+static volatile uint8_t s_soc_flash_save_requested;
 
 /* 读取固定SOC页；“SC”标识或关键SOC数值无效时使用正常上电查表流程。 */
 static bool app_bms_soc_flash_restore(void)
@@ -160,6 +161,30 @@ static bool app_bms_soc_flash_save_internal(bool transition)
 bool app_bms_soc_flash_save(void)
 {
     return app_bms_soc_flash_save_internal(false);
+}
+
+/* 通信/故障清除任务只投递请求，由BMS任务串行保存，避免与SOC积分写入并发。 */
+void app_bms_soc_flash_save_request(void)
+{
+    taskENTER_CRITICAL();
+    s_soc_flash_save_requested = 1U;
+    taskEXIT_CRITICAL();
+}
+
+static void app_bms_process_soc_flash_save_request(void)
+{
+    uint8_t save_requested;
+
+    taskENTER_CRITICAL();
+    save_requested = s_soc_flash_save_requested;
+    s_soc_flash_save_requested = 0U;
+    taskEXIT_CRITICAL();
+
+    if ((save_requested != 0U) && (app_bms_soc_flash_save() == false))
+    {
+        /* Flash忙或写入失败时保留请求，后续BMS周期重试。 */
+        app_bms_soc_flash_save_request();
+    }
 }
 
 bool app_bms_soc_save_for_transition(void)
@@ -340,7 +365,7 @@ static void app_bms_run_soc(void)
     (void)app_soc_data_handle(snapshot.max_cell_mv,
                               snapshot.min_cell_mv,
                               g_app_param_soc_cell_ocv_table,
-                              (long)snapshot.current_ma,
+                              (long)snapshot.current_business_ma,
                               &u8SocTickFlag,
                               (int)snapshot.min_temp_c,
                               (int)snapshot.max_temp_c,
@@ -426,6 +451,7 @@ void BMS_Task(void const *argument)
         /* CAN E200只投递主机请求，查表校验、Flash保存和应答状态由BMS任务串行处理。 */
         app_bms_process_soc_write();
         app_bms_snapshot_update_soc();
+        app_bms_process_soc_flash_save_request();
         app_charge_time_task();
         app_led_task();
 
